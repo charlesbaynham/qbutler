@@ -1,0 +1,36 @@
+# List the requirements for DEVELOPING your package here.
+#
+# These packages shouldn't be required to use the package, just to test it,
+# compile documentation for it, etc. To run a shell with these packages installed
+# use `nix develop`.
+#
+# Unlike a requirements.txt file, you should aim to be as loose as possible in
+# your version requirements (i.e. prefer "numpy>1" to "numpy==1.5.4"). This
+# allows your package to coexist easily with other packages.
+#
+# Dependency pinning for e.g. CI testing is achieved through Nix; the requirements.txt
+# file in this repository was generated from the nix flake's evaluation and is only for
+# compatibility with nixless systems, i.e. Windows.
+#
+# Despite the comment in requirementsDev.txt, don't run pip-compile to update it. Instead,
+# run `nix run .#update_requirements` after adding your new packages to this file
+# (or requirements.in).
+
+# Code linting
+pre-commit
+
+# Unit testing
+pytest
+coverage
+
+# Documentation generation
+sphinx
+sphinx-autobuild
+sphinx_rtd_theme
+sphinxcontrib-svg2pdfconverter
+
+# Environment debugging / freezing for non-nix python
+pip-tools
+
+# General debugging
+ipython
