@@ -12,10 +12,10 @@ class TestMonitor(Calibration):
         self.threshold: FloatParamHandle
         self.set_timeout(1)
 
-    def calibrate(self):
+    def calibrate_self(self):
         raise NotImplementedError
 
-    def check_state(self):
+    def check_own_state(self):
         r = random()
         if r > self.threshold.get():
             result = CalibrationResult.BAD_DATA

@@ -21,12 +21,6 @@ class CalibrationResult(Flag):
 
 
 class Calibration(ExpFragment):
-    def __init__(self, *args, **kwargs) -> None:
-        self._timeout = 0
-        self._dependencies = []
-        self._optimizable_params = []
-        super().__init__(*args, **kwargs)
-
     def build_calibration(self):
         """
         Set parameters / options / results channels for the calibration
@@ -49,14 +43,20 @@ class Calibration(ExpFragment):
         """
         raise NotImplementedError
 
+    def run_once(self) -> None:
+        raise NotImplementedError  # TODO: decide what to do with run_once()
+
     def build_fragment(self, *args, **kwargs) -> None:
         """
-        Call build_calibration for this Calibration
-
-        You can override this method if you like, but you probably don't need
-        to: just put your configuration in build_calibration instead.
+        Set up the calibration
         """
+        self.__timeout = 0
+        self.__dependencies = []
+        self.__optimizable_params = []
+
+        self.__in_build_calibration = True
         self.build_calibration()
+        self.__in_build_calibration = False
 
     def setattr_param_optimizable(
         self, name: str, description: str, min: float, max: float, *args, **kwargs
@@ -93,6 +93,8 @@ class Calibration(ExpFragment):
         Returns:
             ParamHandle: The newly created parameter handle.
         """
+        if not self.__in_build_calibration:
+            return TypeError("This method must only be called in build_calibration()")
 
         p = self.setattr_param(name, FloatParam, description, *args, **kwargs)
         self._optimizable_params.append((min, max, p))
@@ -116,6 +118,9 @@ class Calibration(ExpFragment):
         Args:
             dep_calibration (Type[&quot;Calibration&quot;]): _description_
         """
+        if not self.__in_build_calibration:
+            return TypeError("This method must only be called in build_calibration()")
+
         if isinstance(dep_calibration, Iterable):
             self._dependencies += dep_calibration
         else:
@@ -139,6 +144,9 @@ class Calibration(ExpFragment):
         Args:
             timeout (float): _description_
         """
+        if not self.__in_build_calibration:
+            return TypeError("This method must only be called in build_calibration()")
+
         self.timeout = timeout
 
     def guess_state(self) -> CalibrationResult:
@@ -159,8 +167,8 @@ class Calibration(ExpFragment):
         """
         raise NotImplementedError  # TODO: This need to be written here, not by the user
 
-    def check_state(self) -> CalibrationResult:
+    def check_own_state(self) -> CalibrationResult:
         raise NotImplementedError
 
-    def calibrate(self) -> CalibrationResult:
+    def calibrate_self(self) -> CalibrationResult:
         raise NotImplementedError
