@@ -7,12 +7,6 @@ import pytest
 import qbutler
 
 
-def test_pass():
-    from qbutler.hello import hello
-
-    hello()
-
-
 @pytest.mark.parametrize(
     "module_name",
     [
