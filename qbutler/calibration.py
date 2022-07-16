@@ -1,12 +1,18 @@
 from enum import auto
 from enum import Flag
+from time import time
 from typing import Iterable
+from typing import List
+from typing import Tuple
 from typing import Type
 from typing import Union
 
+import networkx as nx
 from ndscan.experiment import ExpFragment
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
+
+from .dag import _dependency_map
 
 
 class CalibrationResult(Flag):
@@ -53,6 +59,9 @@ class Calibration(ExpFragment):
         self.__timeout = 0
         self.__dependencies = []
         self.__optimizable_params = []
+        self.__most_recent_data_timestamp = None
+        self.__most_recent_data_result = None
+        self.__dag: nx.DiGraph = None
 
         self.__in_build_calibration = True
         self.build_calibration()
@@ -100,31 +109,26 @@ class Calibration(ExpFragment):
         self._optimizable_params.append((min, max, p))
         return p
 
-    def add_dependency(
-        self, dep_calibration: Union[Iterable[Type["Calibration"]], Type["Calibration"]]
-    ) -> None:
+    def add_dependency(self, dep_calibration: Type["Calibration"]) -> None:
         """
         Add a dependency of this Calibration
 
         This method can only be called during the build() phase.
 
         Adds another Calibration as a dependency of this one. This method can be
-        called multiple times to add multiple dependencies, or it can be passed
-        an Iterable.
+        called multiple times to add multiple dependencies.
 
         Note that this method should be passed the dependency's *class*, not an
         instantiated object.
 
         Args:
-            dep_calibration (Type[&quot;Calibration&quot;]): _description_
+            dep_calibration (Type["Calibration"]): The Calibration class to add as a dependency
         """
         if not self.__in_build_calibration:
             return TypeError("This method must only be called in build_calibration()")
 
-        if isinstance(dep_calibration, Iterable):
-            self._dependencies += dep_calibration
-        else:
-            self._dependencies.append(dep_calibration)
+        for dep in dep_calibration:
+            _dependency_map.add((self, type(self), dep))
 
     def set_timeout(self, timeout: float):
         """
@@ -165,10 +169,58 @@ class Calibration(ExpFragment):
         Returns:
             CalibrationResult: The guessed status of this Calibration.
         """
-        raise NotImplementedError  # TODO: This need to be written here, not by the user
+        # Iterate over the dependencies, starting with the ones furthest away, and check their states
+        for dep in self._get_dependencies():
+            state = dep.guess_own_state()
+            if not (state & CalibrationResult.OK):
+                return state
+
+        return self.guess_own_state()
+
+    def check_state(self) -> CalibrationResult:
+        pass
+
+    def guess_own_state(self) -> CalibrationResult:
+        if self.__most_recent_data_result is None:
+            return CalibrationResult.BAD_EXPIRED
+        elif not (self.__most_recent_data_result & CalibrationResult.OK):
+            return self.__most_recent_data_result
+        elif self.__most_recent_data_timestamp + self.__timeout < time():
+            self.__most_recent_data_result = CalibrationResult.BAD_EXPIRED
+            return self.__most_recent_data_result
 
     def check_own_state(self) -> CalibrationResult:
         raise NotImplementedError
 
     def calibrate_self(self) -> CalibrationResult:
         raise NotImplementedError
+
+    def _get_dag(self):
+        if self.__dag is None:
+            raise RuntimeError(
+                """
+DAG requested before it has been built
+
+The dependency DAG is constructed automatically if a calibration chain is
+constructed using the methods in :mod:`entrypoints`. Otherwise, ...(WIP)
+""".strip()
+            )  # TODO: Figure out how else you might make a DAG
+
+        return self.__dag
+
+    def _set_dag(self, dag):
+        self.__dag = dag
+
+    def _get_dependencies(self, furthest_first=True) -> List[Tuple["Calibration", int]]:
+        """
+        Return a list of this Calibration's dependencies
+        """
+        # Get a dict of lengths of paths to all dependencies
+        paths = nx.single_source_shortest_path(self._get_dag(), self)
+
+        # Convert to a list of tuples of (target, distance) with the furthest ones first
+        targets_and_distances = sorted(
+            list(paths.items()), key=lambda _, d: d, reverse=furthest_first
+        )
+
+        return [t for t, _ in targets_and_distances]
