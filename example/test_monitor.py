@@ -1,12 +1,15 @@
 from random import random
 from qbutler.calibration import Calibration, CalibrationResult
 
+from ndscan.experiment.parameters import FloatParamHandle
+
 
 class TestMonitor(Calibration):
     def build_calibration(self):
         self.setattr_param(
             "threshold", "Threshold above which this monitor will report 'BAD'"
         )
+        self.threshold: FloatParamHandle
         self.set_timeout(1)
 
     def calibrate(self):
@@ -14,6 +17,12 @@ class TestMonitor(Calibration):
 
     def check_state(self):
         r = random()
+        if r > self.threshold.get():
+            result = CalibrationResult.BAD_DATA
+        else:
+            result = CalibrationResult.OK
+
+        return result
 
 
 class MonitorMaster(Calibration):
