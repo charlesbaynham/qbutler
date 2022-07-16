@@ -14,4 +14,4 @@
 # both requirements.txt and flake.lock are identical.
 
 # List packages here, e.g.:
-# numpy
+networkx
