@@ -25,14 +25,31 @@
 {
   description = "Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably. ";
 
-  # For packaging
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-21.11";
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.mach-nix.url = "mach-nix/3.4.0";
+  inputs = {
+    # For packaging
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-21.11";
+    flake-utils.url = "github:numtide/flake-utils";
+    mach-nix.url = "mach-nix/3.4.0";
 
-  inputs.nixpkgs.follows = "mach-nix/nixpkgs";
+    nixpkgs.follows = "mach-nix/nixpkgs";
 
-  outputs = { self, nixpkgs, flake-utils, mach-nix }:
+    artiq = {
+      url = "git+https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    # Oxford's ndscan ARTIQ extension + supporting package
+    ndscan = {
+      url = "github:OxfordIonTrapGroup/ndscan";
+      flake = false;
+    };
+    oitg = {
+      url = "github:OxfordIonTrapGroup/oitg";
+      flake = false;
+    };
+  };
+
+  outputs = { self, nixpkgs, flake-utils, mach-nix, artiq, ndscan, oitg }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -40,8 +57,49 @@
         versionNum = (pkgs.lib.trivial.importJSON "${self}/VERSION.json").version;
         fullVersion = "${versionNum}+${self.shortRev or "dirty-${self.lastModifiedDate}"}";
 
+        # ARTIQ has a version number which is not semver compliant, so cannot be
+        # parsed by mach-nix. Since we know exactly what version of ARTIQ we want,
+        # there's no change of mach-nix accidentally choosing the wrong version.
+        # We therefore override the version number to anything we want, as long as
+        # it's semver compliant. This won't affect what artiq thinks its version
+        # number is: it's only used for the mach-nix selection process.
+        patched_artiq = artiq.packages.${system}.artiq // { "version" = "0.0.0"; };
+
+        # Packages built with buildPythonPackage but which are not in nixpkgs already
+        nonPyPIPackages = [
+          patched_artiq
+
+          artiq.packages.${system}.llvmlite-new
+          artiq.packages.${system}.pythonparser
+          artiq.packages.${system}.qasync
+          artiq.inputs.sipyco.packages.${system}.sipyco
+          artiq.inputs.artiq-comtools.packages.${system}.artiq-comtools
+        ];
+
+        # Here we define a function which patches all the ARTIQ packages (or
+        # rather, packages built with nixpkgs.buildPythonPackage but which are not
+        # in nixpkgs) into nixpkgs. This allows mach-nix to see them so that it
+        # can choose to update them if required. If we don't do this, and if these
+        # packages share dependencies with others which *are* parsed by mach-nix,
+        # we'll end up with collisions in our python environment. Note: we must
+        # also explicitly tell mach-nix that these are dependencies, otherwise it
+        # also won't work for esoteric reasons. Ask me how I know.
+        nonPyPIPackagesByName =
+          builtins.listToAttrs (
+            map (newpkg: ({ name = newpkg.pname; value = newpkg; })) nonPyPIPackages
+          );
+        # We also compile a list of their names, for adding into requirements
+        nonPyPIRequirements = pkgs.lib.concatStringsSep "\n" (map (p: p.pname) nonPyPIPackages);
+
         qbutler = mach-nix.lib."${system}".buildPythonPackage {
-          requirements = builtins.readFile ./requirements.in;
+          requirements = (builtins.readFile ./requirements.in) + "\n" + nonPyPIRequirements;
+          packagesExtra = [
+            ndscan
+            oitg
+          ];
+          overridesPre = [
+            (final: prev: nonPyPIPackagesByName)
+          ];
           src = self;
           version = fullVersion;
           PYTHON_VERSION_OVERRIDE = fullVersion;
@@ -51,7 +109,21 @@
           (
             mach-nix.lib."${system}".mkPython {
               requirements = builtins.readFile ./requirementsDev.in;
-              packagesExtra = [ qbutler ];
+              packagesExtra = [
+                qbutler
+                ndscan
+                oitg
+              ];
+              overridesPre = [
+                (final: prev: nonPyPIPackagesByName)
+              ];
+              providers = {
+                # This is a bugfix, because pythonparser IS in PyPI, but not the
+                # latest version. We therefore force it to use the nixpkgs
+                # version, which we've just created via overridePre. Remove once
+                # https://github.com/m-labs/pythonparser/issues/31 is closed.
+                pythonparser = "nixpkgs";
+              };
             }
           )
 
