@@ -6,6 +6,7 @@ from typing import List
 from typing import Tuple
 from typing import Type
 from typing import Union
+from unittest import result
 
 import networkx as nx
 from ndscan.experiment import ExpFragment
@@ -59,6 +60,7 @@ class Calibration(ExpFragment):
         self.__timeout = 0
         self.__dependencies = []
         self.__optimizable_params = []
+        self.__most_recent_calibration_timestamp = None
         self.__most_recent_data_timestamp = None
         self.__most_recent_data_result = None
         self.__dag: nx.DiGraph = None
@@ -177,11 +179,42 @@ class Calibration(ExpFragment):
 
         return self.guess_own_state()
 
-    def check_state(self) -> CalibrationResult:
-        pass
+    def check_state(self, force=False) -> CalibrationResult:
+        """
+        Check the state of this Calibration and dependents
+
+        This method will perform quick measurements where necessairy to update
+        any expired / bad / invalid Calibrations. If a dependent Calibration is
+        still within its timeout, it won't be checked unless force==True.
+
+        Note that this method will return as soon as a problem is found, so it
+        is not guaranteed that all dependents were checked unless the result is
+        OK.
+
+        Args:
+            force (bool, optional): Check all dependents, even if they should be
+            fine. Defaults to False.
+
+        Returns:
+            CalibrationResult: Result of the checks.
+        """
+        # Iterate over the dependencies, starting with the ones furthest away, and check their states
+        for dep in self._get_dependencies():
+            current_state = dep.guess_own_state()
+            if current_state != CalibrationResult.OK:
+                new_state = dep.check_own_state()
+                # TODO: This isn't right. I need to do something with Fragments
+                # here, but it's late and I'm tired
+            if not (state & CalibrationResult.OK):
+                return state
+
+        return self.guess_own_state()
 
     def guess_own_state(self) -> CalibrationResult:
-        if self.__most_recent_data_result is None:
+        if (
+            self.__most_recent_data_result is None
+            or self.__most_recent_calibration_timestamp is None
+        ):
             return CalibrationResult.BAD_EXPIRED
         elif not (self.__most_recent_data_result & CalibrationResult.OK):
             return self.__most_recent_data_result
@@ -211,7 +244,7 @@ constructed using the methods in :mod:`entrypoints`. Otherwise, ...(WIP)
     def _set_dag(self, dag):
         self.__dag = dag
 
-    def _get_dependencies(self, furthest_first=True) -> List[Tuple["Calibration", int]]:
+    def _get_dependencies(self, furthest_first=True) -> List["Calibration"]:
         """
         Return a list of this Calibration's dependencies
         """
