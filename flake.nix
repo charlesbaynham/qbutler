@@ -108,9 +108,14 @@
         devReqs = [
           (
             mach-nix.lib."${system}".mkPython {
-              requirements = builtins.readFile ./requirementsDev.in;
+              requirements =
+                (builtins.readFile ./requirements.in)
+                + "\n"
+                + nonPyPIRequirements
+                + "\n"
+                + (builtins.readFile ./requirementsDev.in);
               packagesExtra = [
-                qbutler
+                self
                 ndscan
                 oitg
               ];
