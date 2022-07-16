@@ -27,15 +27,39 @@ class Calibration(ExpFragment):
         self._optimizable_params = []
         super().__init__(*args, **kwargs)
 
+    def build_calibration(self):
+        """
+        Set parameters / options / results channels for the calibration
+
+        As with ndscan's build_fragment() or ARTIQ's build(), this method set up
+        the Calibration by defining things like:
+
+        * What parameters it needs
+        * Which parameters can be optimised
+        * What timeout applies
+        * What other Calibrations this one depends on
+
+        Apart from Calibration methods, you can also call any :module:`ndscan`
+        methods available for build_fragment() in this method.
+
+        Raises:
+            NotImplementedError: Raised if the user did not override this method
+                                 - you must write this method for your own
+                                   classes.
+        """
+        raise NotImplementedError
+
+    def build_fragment(self, *args, **kwargs) -> None:
+        """
+        Call build_calibration for this Calibration
+
+        You can override this method if you like, but you probably don't need
+        to: just put your configuration in build_calibration instead.
+        """
+        self.build_calibration()
+
     def setattr_param_optimizable(
-        self,
-        name: str,
-        param_class: Type[FloatParam],
-        description: str,
-        min: float,
-        max: float,
-        *args,
-        **kwargs
+        self, name: str, description: str, min: float, max: float, *args, **kwargs
     ) -> ParamHandle:
         """Create an ndscan parameter that's available for optimization by the
         calibrator
@@ -59,19 +83,18 @@ class Calibration(ExpFragment):
             valid Python
                         identifier; the parameter handle will be accessible as
                         ``self.<name>``.
-            param_class (Type[FloatParam]): The type of parameter to
-            instantiate. description (str): The human-readable parameter name.
-            min (float): Minimum value for the optimizer to try max (float):
-            Maximum value for the optimizer to try args: Any extra arguments to
-            pass to the ``param_class`` constructor. kwargs: Any extra keyword
-            arguments to pass to the the ``param_class``
+            description (str): The human-readable parameter name.
+            min (float): Minimum value for the optimizer to try
+            max (float): Maximum value for the optimizer to try
+            args: Any extra arguments to pass to the ``param_class`` constructor.
+            kwargs: Any extra keyword arguments to pass to the the ``param_class``
                     constructor.
 
         Returns:
             ParamHandle: The newly created parameter handle.
         """
 
-        p = self.setattr_param(name, param_class, description, *args, **kwargs)
+        p = self.setattr_param(name, FloatParam, description, *args, **kwargs)
         self._optimizable_params.append((min, max, p))
         return p
 
