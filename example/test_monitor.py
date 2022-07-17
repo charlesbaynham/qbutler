@@ -1,7 +1,9 @@
 from random import random
-from qbutler.calibration import Calibration, CalibrationResult
 
 from ndscan.experiment.parameters import FloatParamHandle
+
+from qbutler.calibration import Calibration
+from qbutler.calibration import CalibrationResult
 
 
 class TestMonitor(Calibration):

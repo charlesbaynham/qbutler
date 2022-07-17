@@ -1,16 +1,11 @@
 from enum import auto
 from enum import Flag
-from hashlib import new
 from time import time
-from typing import Iterable
 from typing import List
-from typing import Tuple
 from typing import Type
-from typing import Union
-from unittest import result
 
 import networkx as nx
-from ndscan.experiment import ExpFragment
+from ndscan.experiment import Fragment
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 
@@ -28,7 +23,7 @@ class CalibrationResult(Flag):
     INVALID_DATA = auto()
 
 
-class Calibration(ExpFragment):
+class Calibration(Fragment):
     def build_calibration(self):
         """
         Set parameters / options / results channels for the calibration
@@ -132,6 +127,7 @@ class Calibration(ExpFragment):
 
         for dep in dep_calibration:
             _dependency_map.add((self, type(self), dep))
+            self.__dependencies.append(dep)
 
     def set_timeout(self, timeout: float):
         """
@@ -180,7 +176,7 @@ class Calibration(ExpFragment):
 
         return self.guess_own_state()
 
-    def check_state(self, force=False) -> CalibrationResult:
+    def check_state(self, force=False, continue_on_fail=False) -> CalibrationResult:
         """
         Check the state of this Calibration and dependents
 
@@ -190,24 +186,31 @@ class Calibration(ExpFragment):
 
         Note that this method will return as soon as a problem is found, so it
         is not guaranteed that all dependents were checked unless the result is
-        OK.
+        OK or continue_on_fail was passed.
 
         Args:
             force (bool, optional): Check all dependents, even if they should be
-            fine. Defaults to False.
+                                    fine. Defaults to False.
+            continue_on_fail (bool, optional):
+                                    Continue checking all the dependents even if
+                                    we encounter a failure.
 
         Returns:
-            CalibrationResult: Result of the checks.
+            CalibrationResult:  Result of the checks. If continue_on_fail was
+                                passed, this is the bitwise combination of all results; otherwise it
+                                is the first bad result, or OK.
         """
-        # Iterate over the dependencies, starting with the ones furthest away, and check their states
-        for dep in self._get_dependencies():
+        # Iterate over the dependencies, starting with the ones furthest away,
+        # and check their states, ending with this object
+        r = CalibrationResult.OK
+        for dep in self._get_dependencies() + [self]:
             current_state = dep.guess_own_state()
             if force or current_state != CalibrationResult.OK:
-                new_state = dep._do_check_own_state()
-                if new_state != CalibrationResult.OK:
-                    return new_state
+                r |= dep._do_check_own_state()
+                if r != CalibrationResult.OK and not continue_on_fail:
+                    return r
 
-        return self._do_check_own_state()
+        return r
 
     def _do_check_own_state(self) -> CalibrationResult:
         self.__most_recent_data_result = self.check_own_state()
