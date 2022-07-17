@@ -1,5 +1,6 @@
 from enum import auto
 from enum import Flag
+from hashlib import new
 from time import time
 from typing import Iterable
 from typing import List
@@ -201,14 +202,17 @@ class Calibration(ExpFragment):
         # Iterate over the dependencies, starting with the ones furthest away, and check their states
         for dep in self._get_dependencies():
             current_state = dep.guess_own_state()
-            if current_state != CalibrationResult.OK:
-                new_state = dep.check_own_state()
-                # TODO: This isn't right. I need to do something with Fragments
-                # here, but it's late and I'm tired
-            if not (state & CalibrationResult.OK):
-                return state
+            if force or current_state != CalibrationResult.OK:
+                new_state = dep._do_check_own_state()
+                if new_state != CalibrationResult.OK:
+                    return new_state
 
-        return self.guess_own_state()
+        return self._do_check_own_state()
+
+    def _do_check_own_state(self) -> CalibrationResult:
+        self.__most_recent_data_result = self.check_own_state()
+        self.__most_recent_data_timestamp = time()
+        return self.__most_recent_data_result
 
     def guess_own_state(self) -> CalibrationResult:
         if (
