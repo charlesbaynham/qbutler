@@ -115,10 +115,9 @@
                 + "\n"
                 + (builtins.readFile "${self}/requirementsDev.in");
               packagesExtra = [
-                self
                 ndscan
                 oitg
-              ] ++ (if includeSelf then [self] else []);
+              ] ++ (if includeSelf then [] else []);
               overridesPre = [
                 (final: prev: nonPyPIPackagesByName)
               ];
