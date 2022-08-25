@@ -58,6 +58,10 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
 }
 
+# Mock the artiq and PyFuncs packages, so they don't need to be installed for
+# the docs to be compiled
+autodoc_mock_imports = ["artiq", "ndscan"]
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 

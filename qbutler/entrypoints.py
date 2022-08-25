@@ -4,7 +4,7 @@ from artiq.experiment import EnvExperiment
 from artiq.experiment import NumberValue
 from artiq.master.scheduler import Scheduler
 
-from qbutler.calibration import Calibration
+from .calibration import Calibration
 
 
 def build_interface_from_calibration(

@@ -1,6 +1,9 @@
 import networkx as nx
+from typing import TYPE_CHECKING
 
-from qbutler.calibration import Calibration
+
+if TYPE_CHECKING:
+    from .calibration import Calibration
 
 # Singleton object, used to log add_dependency calls so that a DAG can be
 # constructed. This will hold a set of tuples in the form:
@@ -12,7 +15,7 @@ _dependency_map = set()
 _network_cache = {}
 
 
-def graph_containing_calibration(cal: Calibration):
+def graph_containing_calibration(cal: "Calibration"):
     """
     Return the graph containing the passed Calibration object's type, describing
     its dependency links with both dependents and dependees.
