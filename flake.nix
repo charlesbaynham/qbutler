@@ -105,7 +105,7 @@
           PYTHON_VERSION_OVERRIDE = fullVersion;
         };
 
-        devReqs = [
+        mkDevReqs = { includeSelf ? true } : [
           (
             mach-nix.lib."${system}".mkPython {
               requirements =
@@ -118,7 +118,7 @@
                 self
                 ndscan
                 oitg
-              ];
+              ] ++ (if includeSelf then [self] else []);
               overridesPre = [
                 (final: prev: nonPyPIPackagesByName)
               ];
@@ -131,7 +131,7 @@
               };
             }
           )
-
+          
           # These packages are required for the pipeline:
           pkgs.git # needed for pre-commit
           pkgs.librsvg # needed for latex docs conversion of SVGs
@@ -139,6 +139,9 @@
           # And this is a convenience, for easy editing of nix files
           pkgs.nixpkgs-fmt
         ];
+
+        fullDevReqs = mkDevReqs {includeSelf = true;};
+        buildDevReqs = mkDevReqs {includeSelf = false;};
 
       in
       rec {
@@ -150,7 +153,7 @@
             version = fullVersion;
             src = self;
             phases = [ "buildPhase" ];
-            buildInputs = [ devReqs ];
+            buildInputs = fullDevReqs;
             SPHINX_APIDOC_OPTIONS = "members,show-inheritance";
             GIT_DESCRIBE = fullVersion; # Override for sphinx's versioning
             buildPhase = ''
@@ -167,7 +170,7 @@
             version = fullVersion;
             src = self;
             phases = [ "buildPhase" ];
-            buildInputs = [ devReqs ];
+            buildInputs = fullDevReqs;
             SPHINX_APIDOC_OPTIONS = "members,show-inheritance";
             GIT_DESCRIBE = fullVersion; # Override for sphinx's versioning
             buildPhase = ''
@@ -184,13 +187,13 @@
 
         devShell = pkgs.mkShell {
           name = "qbutler-devShell";
-          buildInputs = devReqs;
+          buildInputs = buildDevReqs;
         };
 
         apps.docs =
           let
             script = pkgs.writeShellScriptBin "launch_server" ''
-              export PATH=${pkgs.lib.makeBinPath devReqs}:$PATH
+              export PATH=${pkgs.lib.makeBinPath fullDevReqs}:$PATH
 
               sphinx-apidoc -o docs/autogen "qbutler"
               exec sphinx-autobuild docs html_out
@@ -201,7 +204,7 @@
         apps.update_requirements =
           let
             script = pkgs.writeShellScriptBin "update_requirements" ''
-              export PATH=${pkgs.lib.makeBinPath devReqs}:$PATH
+              export PATH=${pkgs.lib.makeBinPath fullDevReqs}:$PATH
 
               pip-compile requirements.in
               pip-compile requirementsDev.in
@@ -212,7 +215,7 @@
         apps.pytest =
           let
             script = pkgs.writeShellScriptBin "pytest" ''
-              export PATH=${pkgs.lib.makeBinPath devReqs}:$PATH
+              export PATH=${pkgs.lib.makeBinPath fullDevReqs}:$PATH
 
               coverage run --omit "tests/*,*/_version.py,/nix/store/*" -m pytest --junitxml=report.xml $1
               test_exit_code=$?
