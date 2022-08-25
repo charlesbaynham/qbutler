@@ -92,7 +92,7 @@
         nonPyPIRequirements = pkgs.lib.concatStringsSep "\n" (map (p: p.pname) nonPyPIPackages);
 
         qbutler = mach-nix.lib."${system}".buildPythonPackage {
-          requirements = (builtins.readFile ./requirements.in) + "\n" + nonPyPIRequirements;
+          requirements = (builtins.readFile "${self}/requirements.in") + "\n" + nonPyPIRequirements;
           packagesExtra = [
             ndscan
             oitg
@@ -109,11 +109,11 @@
           (
             mach-nix.lib."${system}".mkPython {
               requirements =
-                (builtins.readFile ./requirements.in)
+                (builtins.readFile "${self}/requirements.in")
                 + "\n"
                 + nonPyPIRequirements
                 + "\n"
-                + (builtins.readFile ./requirementsDev.in);
+                + (builtins.readFile "${self}/requirementsDev.in");
               packagesExtra = [
                 self
                 ndscan
