@@ -1,5 +1,6 @@
-import networkx as nx
 from typing import TYPE_CHECKING
+
+import networkx as nx
 
 
 if TYPE_CHECKING:
