@@ -103,6 +103,13 @@
           src = self;
           version = fullVersion;
           PYTHON_VERSION_OVERRIDE = fullVersion;
+          providers = {
+            # This is a bugfix, because pythonparser IS in PyPI, but not the
+            # latest version. We therefore force it to use the nixpkgs
+            # version, which we've just created via overridePre. Remove once
+            # https://github.com/m-labs/pythonparser/issues/31 is closed.
+            pythonparser = "nixpkgs";
+          };
         };
 
         mkDevReqs = { includeSelf ? true } : [
@@ -115,7 +122,6 @@
                 + "\n"
                 + (builtins.readFile "${self}/requirementsDev.in");
               packagesExtra = [
-                self
                 ndscan
                 oitg
               ] ++ (if includeSelf then [self] else []);
@@ -131,7 +137,7 @@
               };
             }
           )
-          
+
           # These packages are required for the pipeline:
           pkgs.git # needed for pre-commit
           pkgs.librsvg # needed for latex docs conversion of SVGs
