@@ -112,7 +112,7 @@
           };
         };
 
-        mkDevReqs = { includeSelf ? true } : [
+        buildDevReqs = [
           (
             mach-nix.lib."${system}".mkPython {
               requirements =
@@ -124,7 +124,7 @@
               packagesExtra = [
                 ndscan
                 oitg
-              ] ++ (if includeSelf then [self] else []);
+              ];
               overridesPre = [
                 (final: prev: nonPyPIPackagesByName)
               ];
@@ -146,9 +146,6 @@
           pkgs.nixpkgs-fmt
         ];
 
-        fullDevReqs = mkDevReqs {includeSelf = true;};
-        buildDevReqs = mkDevReqs {includeSelf = false;};
-
       in
       rec {
         packages = rec {
@@ -159,7 +156,7 @@
             version = fullVersion;
             src = self;
             phases = [ "buildPhase" ];
-            buildInputs = fullDevReqs;
+            buildInputs = buildDevReqs;
             SPHINX_APIDOC_OPTIONS = "members,show-inheritance";
             GIT_DESCRIBE = fullVersion; # Override for sphinx's versioning
             buildPhase = ''
@@ -176,7 +173,7 @@
             version = fullVersion;
             src = self;
             phases = [ "buildPhase" ];
-            buildInputs = fullDevReqs;
+            buildInputs = buildDevReqs;
             SPHINX_APIDOC_OPTIONS = "members,show-inheritance";
             GIT_DESCRIBE = fullVersion; # Override for sphinx's versioning
             buildPhase = ''
@@ -199,7 +196,7 @@
         apps.docs =
           let
             script = pkgs.writeShellScriptBin "launch_server" ''
-              export PATH=${pkgs.lib.makeBinPath fullDevReqs}:$PATH
+              export PATH=${pkgs.lib.makeBinPath buildDevReqs}:$PATH
 
               sphinx-apidoc -o docs/autogen "qbutler"
               exec sphinx-autobuild docs html_out
@@ -210,7 +207,7 @@
         apps.update_requirements =
           let
             script = pkgs.writeShellScriptBin "update_requirements" ''
-              export PATH=${pkgs.lib.makeBinPath fullDevReqs}:$PATH
+              export PATH=${pkgs.lib.makeBinPath buildDevReqs}:$PATH
 
               pip-compile requirements.in
               pip-compile requirementsDev.in
@@ -221,7 +218,7 @@
         apps.pytest =
           let
             script = pkgs.writeShellScriptBin "pytest" ''
-              export PATH=${pkgs.lib.makeBinPath fullDevReqs}:$PATH
+              export PATH=${pkgs.lib.makeBinPath buildDevReqs}:$PATH
 
               coverage run --omit "tests/*,*/_version.py,/nix/store/*" -m pytest --junitxml=report.xml $1
               test_exit_code=$?
