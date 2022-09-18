@@ -53,11 +53,11 @@
     },
     "flake-utils": {
       "locked": {
-        "lastModified": 1656928814,
-        "narHash": "sha256-RIFfgBuKz6Hp89yRr7+NR5tzIAbn52h8vT6vXkYjZoM=",
+        "lastModified": 1659877975,
+        "narHash": "sha256-zllb8aq3YO3h8B/U0/J1WBgAL8EX5yWf5pMj3G0NAmc=",
         "owner": "numtide",
         "repo": "flake-utils",
-        "rev": "7e2a3b3dfd9af950a856d66b0a7d01e3c18aa249",
+        "rev": "c0e246b9b83f637f4681389ecabcb2681b4f3af0",
         "type": "github"
       },
       "original": {
@@ -120,11 +120,11 @@
     "ndscan": {
       "flake": false,
       "locked": {
-        "lastModified": 1657027583,
-        "narHash": "sha256-W1yahVaF7SxwBVp3s66uX6bQHteLRG/NdckgqikGqQk=",
+        "lastModified": 1660127653,
+        "narHash": "sha256-sNsEYJta/FiIx5j1KT4yvyuq8j6Bgbw+/1WrDPkJmPw=",
         "owner": "OxfordIonTrapGroup",
         "repo": "ndscan",
-        "rev": "4fcbe3adf9e7dc2c78cfc071c777a3a68b4fa029",
+        "rev": "7116e4a75c667fdaa0306f88b0fae1370fca16b0",
         "type": "github"
       },
       "original": {
@@ -151,11 +151,11 @@
     "oitg": {
       "flake": false,
       "locked": {
-        "lastModified": 1644507971,
-        "narHash": "sha256-gEKTlpeSBCfO+xOLbc8ngZIQ9znGv1Ve3F2Onhv8oQE=",
+        "lastModified": 1663173810,
+        "narHash": "sha256-aRC+5UQfLSilc4Xwz+8dI2thjSGGJZhMp6IadQ+zOTc=",
         "owner": "OxfordIonTrapGroup",
         "repo": "oitg",
-        "rev": "1193e2cb415ce4c1a22aab09573b8af5531afee8",
+        "rev": "14513e2c39961ff7238ad98ce06c269f766934b0",
         "type": "github"
       },
       "original": {
