@@ -120,6 +120,11 @@ pdf_compile:
   needs: ["make_docs"]
   stage: Build Documentation
   image:  charlesbaynham/ctanfull
+  # Only build a pdf on the master branch or on tagged commits
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: always
+    - if: $CI_COMMIT_TAG
   artifacts:
     paths:
     - "*.pdf"
@@ -145,5 +150,3 @@ pages:
       when: always
     - if: $CI_COMMIT_TAG
       when: always
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-      when: manual

@@ -1,9 +1,15 @@
 import copy
+from types import FunctionType
+from typing import Callable
+from typing import Type
 
 from artiq.experiment import EnvExperiment
 from artiq.master.worker_db import DatasetManager
 from pytest import fixture
 from sipyco.sync_struct import process_mod
+
+from qbutler.calibration import Calibration
+from tests.test_dependencies import CalibrationWithRepeatedBadDependencies
 
 
 @fixture
@@ -33,8 +39,7 @@ def dataset_mgr(dataset_db):
 
 
 @fixture
-def minimal_experiment(dataset_mgr):
-    class MinimalExperiment(EnvExperiment):
-        pass
-
-    return MinimalExperiment((None, dataset_mgr, None, None))
+def calibration_factory(dataset_mgr) -> Callable[[Type["Calibration"]], Calibration]:
+    return lambda cal_class: cal_class(
+        (None, dataset_mgr, None, None), fragment_path=[]
+    )

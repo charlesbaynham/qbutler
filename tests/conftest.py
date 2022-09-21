@@ -1,5 +1,9 @@
+import logging
+
 import pytest
 from fixtures import *
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def pytest_addoption(parser):
