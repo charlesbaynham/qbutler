@@ -1,3 +1,4 @@
+import logging
 from enum import auto
 from enum import Flag
 from time import time
@@ -12,9 +13,11 @@ from ndscan.experiment.parameters import ParamHandle
 from .dag import add_to_dependency_map
 from .dag import graph_containing_calibration
 
+logger = logging.getLogger(__name__)
+
 
 class CalibrationResult(Flag):
-    OK = auto()
+    OK = 0
 
     BAD_EXPIRED = auto()
     BAD_DEPS = auto()
@@ -57,9 +60,8 @@ class Calibration(Fragment):
         self.__timeout = 0
         self.__dependencies = []
         self.__optimizable_params = []
-        self.__most_recent_calibration_timestamp = None
-        self.__most_recent_data_timestamp = None
-        self.__most_recent_data_result = None
+        self.__most_recent_check_timestamp = None
+        self.__most_recent_check_result = None
 
         self.__in_build_calibration = True
         self.build_calibration()
@@ -111,7 +113,7 @@ class Calibration(Fragment):
         return p
 
     def add_dependency(
-        self, dep_calibration: Type["Calibration"], name: str = None
+        self, dep_calibration_class: Type["Calibration"], name: str = None
     ) -> None:
         """
         Add a dependency of this Calibration
@@ -131,12 +133,14 @@ class Calibration(Fragment):
             return TypeError("This method must only be called in build_calibration()")
 
         if name is None:
-            name = dep_calibration.__name__
+            name = dep_calibration_class.__name__
 
-        self.setattr_fragment(name, dep_calibration)
+        self.setattr_fragment(name, dep_calibration_class)
 
-        add_to_dependency_map(self, dep_calibration)
-        self.__dependencies.append(dep_calibration)
+        dep_calibration_object = getattr(self, name)
+
+        add_to_dependency_map(self, dep_calibration_object)
+        self.__dependencies.append(dep_calibration_object)
 
     def set_timeout(self, timeout: float):
         """
@@ -159,7 +163,7 @@ class Calibration(Fragment):
         if not self.__in_build_calibration:
             return TypeError("This method must only be called in build_calibration()")
 
-        self.timeout = timeout
+        self.__timeout = timeout
 
     def guess_state(self) -> CalibrationResult:
         """
@@ -212,7 +216,9 @@ class Calibration(Fragment):
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
         r = CalibrationResult.OK
-        for dep in self._get_dependencies():
+
+        deps = self._get_dependencies()
+        for dep in deps:
             current_state = dep.guess_own_state()
             if force or current_state != CalibrationResult.OK:
                 r |= dep._do_check_own_state()
@@ -222,21 +228,34 @@ class Calibration(Fragment):
         return r
 
     def _do_check_own_state(self) -> CalibrationResult:
-        self.__most_recent_data_result = self.check_own_state()
-        self.__most_recent_data_timestamp = time()
-        return self.__most_recent_data_result
+        self.__most_recent_check_result = self.check_own_state()
+        self.__most_recent_check_timestamp = time()
+
+        logger.debug(
+            f"Checked own state of {self.__class__}: result {self.__most_recent_check_result} at time {self.__most_recent_check_timestamp}"
+        )
+
+        return self.__most_recent_check_result
 
     def guess_own_state(self) -> CalibrationResult:
         if (
-            self.__most_recent_data_result is None
-            or self.__most_recent_calibration_timestamp is None
+            self.__most_recent_check_result is None
+            or self.__most_recent_check_timestamp is None
         ):
+            logger.debug(
+                f"Guess own state of {self.__class__} failed: no checks have ever been done"
+            )
             return CalibrationResult.BAD_EXPIRED
 
-        if self.__most_recent_data_timestamp + self.__timeout < time():
-            self.__most_recent_data_result = CalibrationResult.BAD_EXPIRED
+        time_now = time()
+        expires_at = self.__most_recent_check_timestamp + self.__timeout
+        if time_now > expires_at:
+            logger.debug(
+                f"Guess own state of {self.__class__} failed: data is stale (time = {time_now}, expired at {expires_at}, timeout = {self.__timeout})"
+            )
+            self.__most_recent_check_result = CalibrationResult.BAD_EXPIRED
 
-        return self.__most_recent_data_result
+        return self.__most_recent_check_result
 
     def check_own_state(self) -> CalibrationResult:
         raise NotImplementedError
@@ -249,7 +268,7 @@ class Calibration(Fragment):
 
     def _get_dependencies(self, furthest_first=True) -> List["Calibration"]:
         """
-        Return a list of this Calibration's dependencies, including this calibration itself
+        Return a list of this Calibration's dependent objects, including this calibration itself
         """
         # Get a dict of lengths of paths to all dependencies
         paths = nx.single_source_shortest_path(self._get_dag(), self)

@@ -1,6 +1,7 @@
 """
 Test for basic functionality. This test file should grow and, one day, split.
 """
+import pytest
 from ndscan.experiment import Fragment
 from pytest import raises
 
@@ -16,42 +17,49 @@ class MinimalCalibration(Calibration):
         return CalibrationResult.OK
 
 
-def test_cannot_make_bare_calibration(dataset_mgr):
+def test_cannot_make_bare_calibration(calibration_factory):
     with raises(NotImplementedError):
-        Calibration((None, dataset_mgr, None, None), fragment_path=[])
+        calibration_factory(Calibration)
 
 
-def test_can_make_minimal_calibration(dataset_mgr):
-    MinimalCalibration((None, dataset_mgr, None, None), fragment_path=[])
+def test_can_make_minimal_calibration(calibration_factory):
+    calibration_factory(MinimalCalibration)
 
 
-def test_can_guess_own_state(dataset_mgr):
-    c = MinimalCalibration((None, dataset_mgr, None, None), fragment_path=[])
+def test_can_guess_own_state(calibration_factory):
+    c = calibration_factory(MinimalCalibration)
 
     assert c.guess_own_state() == CalibrationResult.BAD_EXPIRED
 
 
-def test_can_check_own_state(dataset_mgr):
-    c = MinimalCalibration((None, dataset_mgr, None, None), fragment_path=[])
+def test_can_check_own_state(calibration_factory):
+    c = calibration_factory(MinimalCalibration)
 
     assert c.check_own_state() == CalibrationResult.OK
 
 
-def test_can_guess_all_states(dataset_mgr):
-    c = MinimalCalibration((None, dataset_mgr, None, None), fragment_path=[])
+def test_can_guess_all_states(calibration_factory):
+    c = calibration_factory(MinimalCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
 
 
-def test_can_check_all_states(dataset_mgr):
-    c = MinimalCalibration((None, dataset_mgr, None, None), fragment_path=[])
+def test_can_check_all_states(calibration_factory):
+    c = calibration_factory(MinimalCalibration)
 
     assert c.check_state() == CalibrationResult.OK
 
 
-def test_can_make_fragment(dataset_mgr):
+def test_can_make_fragment(calibration_factory):
     class TestFragment(Fragment):
         def build_fragment(self):
             pass
 
-    TestFragment((None, dataset_mgr, None, None), fragment_path=[])
+    calibration_factory(TestFragment)
+
+
+@pytest.mark.xfail
+def test_run_once(calibration_factory):
+    c = calibration_factory(MinimalCalibration)
+
+    c.run_once()
