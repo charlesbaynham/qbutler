@@ -1,10 +1,52 @@
+"""
+*Entrypoints* are the interface from regular ARTIQ / ndscan to qbutler,
+analagous to entrypoint in ndscan. There are two options:
+
+1. Standalone Calibrations. Use :meth:`build_interface_from_calibration` to
+   launch a Calibration as a standalone EnvExperiment to check and maintain a
+   tree of Calibrations indefinitely. See the docs for
+   :meth:`build_interface_from_calibration` for more details.
+
+2. Calibrations in a Fragment. This is the main use-case of qbutler. Use
+   :meth:`setattr_calibration`.
+
+Expose the final Calibration in a DAG as an attribute of the ARTIQ
+HasEnvironment object, ready for its methods to be called (see the documentation
+for :class:`~qbutler.calibration.Calibration` for details).
+"""
 from time import sleep
+from typing import Type
 
 from artiq.experiment import EnvExperiment
 from artiq.experiment import NumberValue
 from artiq.master.scheduler import Scheduler
+from ndscan.experiment import Fragment
 
 from .calibration import Calibration
+
+
+def setattr_calibration(
+    self: Fragment,
+    calibration_class: Type["Calibration"],
+    name: str = None,
+    *args,
+    **kwargs
+) -> "Fragment":
+    """
+    Create a Calibration and set it as an attribute of this Fragment.
+
+    This method is added to the Fragment class when qbutler is imported: it can
+    therefore be called from any Fragment. This method should be used to add the
+    final Calibration in a DAG to a Fragment that consumes it, i.e. the Fragment
+    that requires this Calibraiton and all its dependents to have been set up
+    successfully.
+
+    Any additional arguments are passed to setattr_fragment.
+    """
+    if name is None:
+        name = calibration_class.__name__
+
+    self.setattr_fragment(name, calibration_class, *args, **kwargs)
 
 
 def build_interface_from_calibration(

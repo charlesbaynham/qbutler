@@ -198,8 +198,7 @@
             script = pkgs.writeShellScriptBin "launch_server" ''
               export PATH=${pkgs.lib.makeBinPath buildDevReqs}:$PATH
 
-              sphinx-apidoc -o docs/autogen "qbutler"
-              exec sphinx-autobuild docs html_out
+              exec sphinx-autobuild docs html_out --pre-build 'sphinx-apidoc -o docs/autogen "qbutler"' --watch qbutler
             '';
           in
           { type = "app"; program = "${script}/bin/launch_server"; };

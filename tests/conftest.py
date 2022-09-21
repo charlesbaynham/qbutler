@@ -1,4 +1,5 @@
 import pytest
+from fixtures import *
 
 
 def pytest_addoption(parser):

@@ -9,7 +9,8 @@ from ndscan.experiment import Fragment
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 
-from .dag import _dependency_map
+from .dag import add_to_dependency_map
+from .dag import graph_containing_calibration
 
 
 class CalibrationResult(Flag):
@@ -59,11 +60,13 @@ class Calibration(Fragment):
         self.__most_recent_calibration_timestamp = None
         self.__most_recent_data_timestamp = None
         self.__most_recent_data_result = None
-        self.__dag: nx.DiGraph = None
 
         self.__in_build_calibration = True
         self.build_calibration()
         self.__in_build_calibration = False
+
+        # Register this Calibration as having been built
+        add_to_dependency_map(self, None)
 
     def setattr_param_optimizable(
         self, name: str, description: str, min: float, max: float, *args, **kwargs
@@ -107,7 +110,9 @@ class Calibration(Fragment):
         self._optimizable_params.append((min, max, p))
         return p
 
-    def add_dependency(self, dep_calibration: Type["Calibration"]) -> None:
+    def add_dependency(
+        self, dep_calibration: Type["Calibration"], name: str = None
+    ) -> None:
         """
         Add a dependency of this Calibration
 
@@ -125,9 +130,13 @@ class Calibration(Fragment):
         if not self.__in_build_calibration:
             return TypeError("This method must only be called in build_calibration()")
 
-        for dep in dep_calibration:
-            _dependency_map.add((self, type(self), dep))
-            self.__dependencies.append(dep)
+        if name is None:
+            name = dep_calibration.__name__
+
+        self.setattr_fragment(name, dep_calibration)
+
+        add_to_dependency_map(self, dep_calibration)
+        self.__dependencies.append(dep_calibration)
 
     def set_timeout(self, timeout: float):
         """
@@ -142,7 +151,7 @@ class Calibration(Fragment):
         check of the process via a call to :method: `Calibration.check_state` on
         the next request.
 
-        If this method is not called, timeout default to 0 seconds.
+        If this method is not called, timeout defaults to 0 seconds.
 
         Args:
             timeout (float): _description_
@@ -203,7 +212,7 @@ class Calibration(Fragment):
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
         r = CalibrationResult.OK
-        for dep in self._get_dependencies() + [self]:
+        for dep in self._get_dependencies():
             current_state = dep.guess_own_state()
             if force or current_state != CalibrationResult.OK:
                 r |= dep._do_check_own_state()
@@ -223,11 +232,11 @@ class Calibration(Fragment):
             or self.__most_recent_calibration_timestamp is None
         ):
             return CalibrationResult.BAD_EXPIRED
-        elif not (self.__most_recent_data_result & CalibrationResult.OK):
-            return self.__most_recent_data_result
-        elif self.__most_recent_data_timestamp + self.__timeout < time():
+
+        if self.__most_recent_data_timestamp + self.__timeout < time():
             self.__most_recent_data_result = CalibrationResult.BAD_EXPIRED
-            return self.__most_recent_data_result
+
+        return self.__most_recent_data_result
 
     def check_own_state(self) -> CalibrationResult:
         raise NotImplementedError
@@ -236,31 +245,19 @@ class Calibration(Fragment):
         raise NotImplementedError
 
     def _get_dag(self):
-        if self.__dag is None:
-            raise RuntimeError(
-                """
-DAG requested before it has been built
-
-The dependency DAG is constructed automatically if a calibration chain is
-constructed using the methods in :mod:`entrypoints`. Otherwise, ...(WIP)
-""".strip()
-            )  # TODO: Figure out how else you might make a DAG
-
-        return self.__dag
-
-    def _set_dag(self, dag):
-        self.__dag = dag
+        return graph_containing_calibration(self)
 
     def _get_dependencies(self, furthest_first=True) -> List["Calibration"]:
         """
-        Return a list of this Calibration's dependencies
+        Return a list of this Calibration's dependencies, including this calibration itself
         """
         # Get a dict of lengths of paths to all dependencies
         paths = nx.single_source_shortest_path(self._get_dag(), self)
 
         # Convert to a list of tuples of (target, distance) with the furthest ones first
+        targets_and_distances = [(t, len(p)) for t, p in paths.items()]
         targets_and_distances = sorted(
-            list(paths.items()), key=lambda _, d: d, reverse=furthest_first
+            targets_and_distances, key=lambda d: d[1], reverse=furthest_first
         )
 
         return [t for t, _ in targets_and_distances]
