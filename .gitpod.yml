@@ -2,7 +2,7 @@ image:
   file: .gitpod.Dockerfile
 tasks:
   - init: >
-      cachix use imperial-strontium &&
+      cachix use aion-physics &&
 
       (yes | nix develop -c echo devShell build successful) &&
       bash -c "nix-store --export \$(nix-store --query -R --include-outputs \$(nix path-info --all)) > /workspace/nix_export"
