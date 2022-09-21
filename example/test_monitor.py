@@ -6,7 +6,7 @@ from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 
 
-class TestMonitor(Calibration):
+class MonitorTest(Calibration):
     def build_calibration(self):
         self.setattr_param(
             "threshold", "Threshold above which this monitor will report 'BAD'"
@@ -29,7 +29,7 @@ class TestMonitor(Calibration):
 
 class MonitorMaster(Calibration):
     def build_calibration(self):
-        self.add_dependency(TestMonitor)
+        self.add_dependency(MonitorTest)
 
     def check_state(self) -> CalibrationResult:
         return True
