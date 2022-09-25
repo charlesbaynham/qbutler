@@ -117,8 +117,8 @@ def tex_escape(text):
 # If running on Gitlab's CI, get the version from the environmental variables.
 # Note that this isn't a built in variable, it's one I've added in another CI
 # job.
-if "GIT_DESCRIBE" in os.environ:
-    version = os.environ["GIT_DESCRIBE"]
+if "PYTHON_VERSION_OVERRIDE" in os.environ:
+    version = os.environ["PYTHON_VERSION_OVERRIDE"]
 # Else, attempt to get it from the package
 else:
     import qbutler
