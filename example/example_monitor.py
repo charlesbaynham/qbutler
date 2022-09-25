@@ -14,7 +14,7 @@ class MonitorTest(Calibration):
         self.threshold: FloatParamHandle
         self.set_timeout(1)
 
-    def calibrate_self(self):
+    def fix_own_state(self):
         raise NotImplementedError
 
     def check_own_state(self):
