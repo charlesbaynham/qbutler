@@ -158,7 +158,7 @@
             phases = [ "buildPhase" ];
             buildInputs = buildDevReqs;
             SPHINX_APIDOC_OPTIONS = "members,show-inheritance";
-            GIT_DESCRIBE = fullVersion; # Override for sphinx's versioning
+            PYTHON_VERSION_OVERRIDE = fullVersion; # Override for sphinx's versioning
             buildPhase = ''
               cp -r $src/* .
               chmod -R +w .
@@ -175,7 +175,7 @@
             phases = [ "buildPhase" ];
             buildInputs = buildDevReqs;
             SPHINX_APIDOC_OPTIONS = "members,show-inheritance";
-            GIT_DESCRIBE = fullVersion; # Override for sphinx's versioning
+            PYTHON_VERSION_OVERRIDE = fullVersion; # Override for sphinx's versioning
             buildPhase = ''
               cp -r $src/* .
               chmod -R +w .
