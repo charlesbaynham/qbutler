@@ -4,16 +4,23 @@ from enum import Flag
 from time import time
 from typing import List
 from typing import Type
+from weakref import WeakValueDictionary
 
 import networkx as nx
 from ndscan.experiment import Fragment
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 
-from .dag import add_to_dependency_map
-from .dag import graph_containing_calibration
+from . import dag
 
 logger = logging.getLogger(__name__)
+
+
+_initialized_calibrations_cache = WeakValueDictionary()
+
+
+class CalibrationError(RuntimeError):
+    pass
 
 
 class CalibrationResult(Flag):
@@ -28,6 +35,9 @@ class CalibrationResult(Flag):
 
 
 class Calibration(Fragment):
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
     def build_calibration(self):
         """
         Set parameters / options / results channels for the calibration
@@ -58,8 +68,8 @@ class Calibration(Fragment):
         Set up the calibration
         """
         self.__timeout = 0
-        self.__dependencies = []
-        self.__optimizable_params = []
+        # self.__dependencies = []
+        # self.__optimizable_params = []
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
 
@@ -68,7 +78,7 @@ class Calibration(Fragment):
         self.__in_build_calibration = False
 
         # Register this Calibration as having been built
-        add_to_dependency_map(self, None)
+        dag.add_to_dependency_map(self, None)
 
     def setattr_param_optimizable(
         self, name: str, description: str, min: float, max: float, *args, **kwargs
@@ -135,12 +145,27 @@ class Calibration(Fragment):
         if name is None:
             name = dep_calibration_class.__name__
 
-        self.setattr_fragment(name, dep_calibration_class)
+        if dep_calibration_class in _initialized_calibrations_cache:
+            # If this Calibration has been already created elsewhere, don't make a
+            # new copy. Instead, add the existing version as an attribute
 
-        dep_calibration_object = getattr(self, name)
+            setattr(self, name, _initialized_calibrations_cache[dep_calibration_class])
+        else:
+            # Otherwise, initialize it as a new subfragment and add it to our
+            # DAG machinery
+            self.setattr_fragment(name, dep_calibration_class)
 
-        add_to_dependency_map(self, dep_calibration_object)
-        self.__dependencies.append(dep_calibration_object)
+            dep_calibration_object = getattr(self, name)
+
+            _initialized_calibrations_cache[
+                dep_calibration_class
+            ] = dep_calibration_object
+
+            dag.add_to_dependency_map(self, dep_calibration_object)
+            # self.__dependencies.append(dep_calibration_object)
+
+    def get_dependencies(self):
+        return dag.get_dependencies(self)
 
     def set_timeout(self, timeout: float):
         """
@@ -182,7 +207,7 @@ class Calibration(Fragment):
             CalibrationResult: The guessed status of this Calibration.
         """
         # Iterate over the dependencies, starting with the ones furthest away, and check their states
-        for dep in self._get_dependencies():
+        for dep in dag.get_dependencies(self):
             state = dep.guess_own_state()
             if not (state & CalibrationResult.OK):
                 return state
@@ -217,7 +242,7 @@ class Calibration(Fragment):
         # and check their states, ending with this object
         r = CalibrationResult.OK
 
-        deps = self._get_dependencies()
+        deps = dag.get_dependencies(self)
         for dep in deps:
             current_state = dep.guess_own_state()
             if force or current_state != CalibrationResult.OK:
@@ -226,6 +251,61 @@ class Calibration(Fragment):
                     return r
 
         return r
+
+    def fix_state(self, force=False):
+        """
+        Fix the state of this Calibration and dependents
+
+        This method will perform quick measurements where necessairy to update
+        any expired / bad / invalid Calibrations. If force==True, this step is
+        skipped.
+
+        For any Calibrations that fail the check, or if force==True,
+        :meth:`fix_own_state` will be called on each, starting from the most
+        basic. After this, :meth`check_own_state` will be called again and the
+        algorithm will either exist with an error or continue on success.
+
+        Args:
+            force (bool, optional): Check all dependents, even if they should be
+                                    fine. Defaults to False.
+
+        Returns:
+            CalibrationResult:  Result of the checks. If continue_on_fail was
+                                passed, this is the bitwise combination of all
+                                results; otherwise it is the first bad result,
+                                or OK.
+        """
+        # Iterate over the dependencies, starting with the ones furthest away,
+        # and check their states, ending with this object
+        deps = dag.get_dependencies(self)
+        logger.debug(f"Fixing all dependencies of {self.__class__.__name__}")
+        for dep in deps:
+            current_state = dep.guess_own_state()
+            logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
+
+            if current_state & CalibrationResult.BAD_EXPIRED and not force:
+                current_state = dep.check_own_state()
+                logger.debug(
+                    f"Checked state of {dep.__class__.__name__} = {current_state}"
+                )
+
+            if current_state != CalibrationResult.OK or force:
+                logger.debug(f"Attempting fix of {dep.__class__.__name__}")
+
+                dep.fix_own_state()
+                current_state = dep.check_own_state()
+
+                logger.debug(
+                    f"Result of fix of {dep.__class__.__name__} = {current_state}"
+                )
+
+                if current_state != CalibrationResult.OK:
+                    self.__most_recent_check_result = CalibrationResult.BAD_DEPS
+                    self.__most_recent_check_timestamp = time()
+
+                    raise CalibrationError(
+                        f"Calibration of {dep.__class__.__name__} failed"
+                    )
 
     def _do_check_own_state(self) -> CalibrationResult:
         self.__most_recent_check_result = self.check_own_state()
@@ -260,23 +340,8 @@ class Calibration(Fragment):
     def check_own_state(self) -> CalibrationResult:
         raise NotImplementedError
 
-    def calibrate_self(self) -> CalibrationResult:
+    def fix_own_state(self) -> None:
         raise NotImplementedError
 
     def _get_dag(self):
-        return graph_containing_calibration(self)
-
-    def _get_dependencies(self, furthest_first=True) -> List["Calibration"]:
-        """
-        Return a list of this Calibration's dependent objects, including this calibration itself
-        """
-        # Get a dict of lengths of paths to all dependencies
-        paths = nx.single_source_shortest_path(self._get_dag(), self)
-
-        # Convert to a list of tuples of (target, distance) with the furthest ones first
-        targets_and_distances = [(t, len(p)) for t, p in paths.items()]
-        targets_and_distances = sorted(
-            targets_and_distances, key=lambda d: d[1], reverse=furthest_first
-        )
-
-        return [t for t, _ in targets_and_distances]
+        return dag.get_graph_containing_calibration(self)

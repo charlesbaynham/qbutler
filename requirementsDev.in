@@ -23,6 +23,8 @@ black
 # Unit testing
 pytest
 coverage
+notebook
+matplotlib
 
 # Documentation generation
 sphinx
