@@ -18,8 +18,8 @@ class OverriddenFixableCalibration(Calibration):
         self.broken = False
 
 
-def test_can_fix_broken_calibration(experiment_factory):
-    c: Calibration = experiment_factory(OverriddenFixableCalibration)
+def test_can_fix_broken_calibration(fragment_factory):
+    c: Calibration = fragment_factory(OverriddenFixableCalibration)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
@@ -39,8 +39,8 @@ class DependantCalibration(Calibration):
         pass
 
 
-def test_can_fix_broken_child_calibration(experiment_factory):
-    c: Calibration = experiment_factory(DependantCalibration)
+def test_can_fix_broken_child_calibration(fragment_factory):
+    c: Calibration = fragment_factory(DependantCalibration)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
@@ -49,7 +49,7 @@ def test_can_fix_broken_child_calibration(experiment_factory):
     assert c.check_state() == CalibrationResult.OK
 
 
-def test_correct_order_fixes(experiment_factory):
+def test_correct_order_fixes(fragment_factory):
 
     log_calls = {}
 
@@ -120,7 +120,7 @@ def test_correct_order_fixes(experiment_factory):
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
 
-    c: Calibration = experiment_factory(Dep4A)
+    c: Calibration = fragment_factory(Dep4A)
 
     c.fix_state(force=True)
 

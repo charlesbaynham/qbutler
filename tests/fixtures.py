@@ -4,10 +4,12 @@ import logging
 from typing import Callable
 from typing import Type
 
+from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
 from artiq.language.environment import ProcessArgumentManager
 from artiq.master.worker_db import DatasetManager
 from artiq.master.worker_db import DeviceManager
+from ndscan.experiment import Fragment
 from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
@@ -51,21 +53,27 @@ def argument_mgr():
 
 
 @fixture
+def fragment_factory(
+    device_mgr, dataset_mgr, argument_mgr
+) -> Callable[[Type["Fragment"]], Fragment]:
+    def fac(exp_class):
+        frag = exp_class(
+            (device_mgr, dataset_mgr, argument_mgr, None), fragment_path=[]
+        )
+        frag.init_params()
+        return frag
+
+    return fac
+
+
+@fixture
 def experiment_factory(
     device_mgr, dataset_mgr, argument_mgr
-) -> Callable[[Type["Calibration"]], Calibration]:
-    def fac(cal_class):
-        c = cal_class((device_mgr, dataset_mgr, argument_mgr, None), fragment_path=[])
+) -> Callable[[Type["EnvExperiment"]], EnvExperiment]:
+    def fac(exp_class):
+        return exp_class((device_mgr, dataset_mgr, argument_mgr, None))
 
-        if hasattr(c, "init_params"):
-            c.init_params()
-
-        return c
-
-    yield fac
-
-    # Clear cache of initialized calibrations after each test
-    qbutler.calibration._initialized_calibrations_cache.clear()
+    return fac
 
 
 @fixture

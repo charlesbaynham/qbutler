@@ -9,7 +9,7 @@ from qbutler.calibration import CalibrationResult
 
 
 @pytest.fixture
-def simple_network(experiment_factory):
+def simple_network(fragment_factory):
     class DepA(Calibration):
         def build_calibration(self):
             pass
@@ -40,11 +40,11 @@ def simple_network(experiment_factory):
         def fix_own_state(self) -> None:
             pass
 
-    return experiment_factory(DepC)
+    return fragment_factory(DepC)
 
 
 @pytest.fixture
-def complex_network(experiment_factory):
+def complex_network(fragment_factory):
     class Dep1A(Calibration):
         def build_calibration(self):
             pass
@@ -107,7 +107,7 @@ def complex_network(experiment_factory):
         def fix_own_state(self) -> None:
             pass
 
-    return experiment_factory(Dep4A)
+    return fragment_factory(Dep4A)
 
 
 def test_complex_network_build(complex_network: Calibration, plot_graph):

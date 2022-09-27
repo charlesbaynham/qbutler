@@ -2,8 +2,8 @@ from example.example_monitor import MonitorMaster
 from qbutler.calibration import CalibrationResult
 
 
-def test_monitor_can_both_pass_and_fail(experiment_factory):
-    c = experiment_factory(MonitorMaster)
+def test_monitor_can_both_pass_and_fail(fragment_factory):
+    c = fragment_factory(MonitorMaster)
 
     c.init_params()
 
