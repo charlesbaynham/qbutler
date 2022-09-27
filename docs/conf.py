@@ -56,6 +56,10 @@ extensions = [
 # sphinx-generated docs here
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
+    "ndscan": (
+        "https://oxfordiontrapgroup.github.io/ndscan",
+        "https://oxfordiontrapgroup.github.io/ndscan/objects.inv",
+    ),
 }
 
 # Mock the artiq and PyFuncs packages, so they don't need to be installed for

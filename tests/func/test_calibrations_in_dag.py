@@ -9,13 +9,13 @@ from qbutler.calibration import CalibrationResult
 
 
 @pytest.fixture
-def simple_network(calibration_factory):
+def simple_network(experiment_factory):
     class DepA(Calibration):
         def build_calibration(self):
             pass
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -24,8 +24,8 @@ def simple_network(calibration_factory):
         def build_calibration(self):
             self.add_dependency(DepA)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -34,23 +34,23 @@ def simple_network(calibration_factory):
         def build_calibration(self):
             self.add_dependency(DepB)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
 
-    return calibration_factory(DepC)
+    return experiment_factory(DepC)
 
 
 @pytest.fixture
-def complex_network(calibration_factory):
+def complex_network(experiment_factory):
     class Dep1A(Calibration):
         def build_calibration(self):
             pass
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -59,8 +59,8 @@ def complex_network(calibration_factory):
         def build_calibration(self):
             pass
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -70,8 +70,8 @@ def complex_network(calibration_factory):
             self.add_dependency(Dep1A)
             self.add_dependency(Dep1B)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -80,8 +80,8 @@ def complex_network(calibration_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -90,8 +90,8 @@ def complex_network(calibration_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
@@ -101,13 +101,13 @@ def complex_network(calibration_factory):
             self.add_dependency(Dep3A)
             self.add_dependency(Dep3B)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             pass
 
-    return calibration_factory(Dep4A)
+    return experiment_factory(Dep4A)
 
 
 def test_complex_network_build(complex_network: Calibration, plot_graph):
@@ -125,7 +125,7 @@ def test_simple_network_size(simple_network: Calibration):
 
 
 def test_simple_network_deps(simple_network: Calibration):
-    assert len(simple_network.get_dependencies()) == 3
+    assert len(simple_network._get_dependencies()) == 3
 
 
 def test_complex_network_size(complex_network: Calibration):
@@ -135,4 +135,4 @@ def test_complex_network_size(complex_network: Calibration):
 
 
 def test_complex_network_deps(complex_network: Calibration):
-    assert len(complex_network.get_dependencies()) == 6
+    assert len(complex_network._get_dependencies()) == 6

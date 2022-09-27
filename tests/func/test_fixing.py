@@ -4,22 +4,22 @@ from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 
 
-class FixableCalibration(Calibration):
+class OverriddenFixableCalibration(Calibration):
     def build_calibration(self):
         self.broken = True
 
-    def check_own_state(self) -> CalibrationResult:
+    def run_once(self) -> None:
         if self.broken:
-            return CalibrationResult.BAD_DATA
+            self.status.push(CalibrationResult.BAD_DATA)
         else:
-            return CalibrationResult.OK
+            self.status.push(CalibrationResult.OK)
 
     def fix_own_state(self) -> CalibrationResult:
         self.broken = False
 
 
-def test_can_fix_broken_calibration(calibration_factory):
-    c: Calibration = calibration_factory(FixableCalibration)
+def test_can_fix_broken_calibration(experiment_factory):
+    c: Calibration = experiment_factory(OverriddenFixableCalibration)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
@@ -30,17 +30,17 @@ def test_can_fix_broken_calibration(calibration_factory):
 
 class DependantCalibration(Calibration):
     def build_calibration(self):
-        self.add_dependency(FixableCalibration)
+        self.add_dependency(OverriddenFixableCalibration)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
     def fix_own_state(self) -> None:
         pass
 
 
-def test_can_fix_broken_child_calibration(calibration_factory):
-    c: Calibration = calibration_factory(DependantCalibration)
+def test_can_fix_broken_child_calibration(experiment_factory):
+    c: Calibration = experiment_factory(DependantCalibration)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
@@ -49,7 +49,7 @@ def test_can_fix_broken_child_calibration(calibration_factory):
     assert c.check_state() == CalibrationResult.OK
 
 
-def test_correct_order_fixes(calibration_factory):
+def test_correct_order_fixes(experiment_factory):
 
     log_calls = {}
 
@@ -62,8 +62,8 @@ def test_correct_order_fixes(calibration_factory):
         def build_calibration(self):
             pass
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -72,8 +72,8 @@ def test_correct_order_fixes(calibration_factory):
         def build_calibration(self):
             pass
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -83,8 +83,8 @@ def test_correct_order_fixes(calibration_factory):
             self.add_dependency(Dep1A)
             self.add_dependency(Dep1B)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -93,8 +93,8 @@ def test_correct_order_fixes(calibration_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -103,8 +103,8 @@ def test_correct_order_fixes(calibration_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -114,13 +114,13 @@ def test_correct_order_fixes(calibration_factory):
             self.add_dependency(Dep3A)
             self.add_dependency(Dep3B)
 
-        def check_own_state(self) -> CalibrationResult:
-            return CalibrationResult.OK
+        def run_once(self) -> None:
+            self.status.push(CalibrationResult.OK)
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
 
-    c: Calibration = calibration_factory(Dep4A)
+    c: Calibration = experiment_factory(Dep4A)
 
     c.fix_state(force=True)
 

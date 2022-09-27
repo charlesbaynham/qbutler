@@ -13,53 +13,66 @@ class MinimalCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
-def test_cannot_make_bare_calibration(calibration_factory):
+def test_cannot_make_bare_calibration(experiment_factory):
     with raises(NotImplementedError):
-        calibration_factory(Calibration)
+        experiment_factory(Calibration)
 
 
-def test_can_make_minimal_calibration(calibration_factory):
-    calibration_factory(MinimalCalibration)
+def test_can_make_minimal_calibration(experiment_factory):
+    experiment_factory(MinimalCalibration)
 
 
-def test_can_guess_own_state(calibration_factory):
-    c = calibration_factory(MinimalCalibration)
+def test_can__guess_own_state(experiment_factory):
+    c = experiment_factory(MinimalCalibration)
 
-    assert c.guess_own_state() == CalibrationResult.BAD_EXPIRED
+    assert c._guess_own_state() == CalibrationResult.BAD_EXPIRED
 
 
-def test_can_check_own_state(calibration_factory):
-    c = calibration_factory(MinimalCalibration)
+def test_can_check_own_state(experiment_factory):
+    c = experiment_factory(MinimalCalibration)
 
     assert c.check_own_state() == CalibrationResult.OK
 
 
-def test_can_guess_all_states(calibration_factory):
-    c = calibration_factory(MinimalCalibration)
+def test_can_guess_all_states(experiment_factory):
+    c = experiment_factory(MinimalCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
 
 
-def test_can_check_all_states(calibration_factory):
-    c = calibration_factory(MinimalCalibration)
+def test_can_check_all_states(experiment_factory):
+    c = experiment_factory(MinimalCalibration)
 
     assert c.check_state() == CalibrationResult.OK
 
 
-def test_can_make_fragment(calibration_factory):
+def test_can_make_fragment(experiment_factory):
     class TestFragment(Fragment):
         def build_fragment(self):
             pass
 
-    calibration_factory(TestFragment)
+    experiment_factory(TestFragment)
 
 
 @pytest.mark.xfail
-def test_run_once(calibration_factory):
-    c = calibration_factory(MinimalCalibration)
+def test_run_once(experiment_factory):
+    c = experiment_factory(MinimalCalibration)
 
     c.run_once()
+
+
+class ParamsCalibration(Calibration):
+    def build_calibration(self):
+        self.setattr_param_optimizable("test", "A test", 0, 1)
+
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
+
+
+@pytest.mark.xfail
+def test_can_make_params_calibration(experiment_factory):
+    experiment_factory(ParamsCalibration)

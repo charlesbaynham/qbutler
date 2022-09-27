@@ -2,12 +2,13 @@ import logging
 from enum import auto
 from enum import Flag
 from time import time
-from typing import List
 from typing import Type
 from weakref import WeakValueDictionary
 
-import networkx as nx
-from ndscan.experiment import Fragment
+from ndscan.experiment import ExpFragment
+from ndscan.experiment import FloatChannel
+from ndscan.experiment import OpaqueChannel
+from ndscan.experiment import run_fragment_once
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 
@@ -17,13 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 _initialized_calibrations_cache = WeakValueDictionary()
+# TODO: get rid of this: it's redundant with the information stored in the dag namespace
 
 
 class CalibrationError(RuntimeError):
     pass
 
 
-class CalibrationResult(Flag):
+class CalibrationResult(int, Flag):
     OK = 0
 
     BAD_EXPIRED = auto()
@@ -34,7 +36,34 @@ class CalibrationResult(Flag):
     INVALID_DATA = auto()
 
 
-class Calibration(Fragment):
+class Calibration(ExpFragment):
+    """
+    Represent a step in a calibration chain
+
+    Calibrations represent a system with a desired outcome than can be checked
+    and affected by changing certain parameters. A Calibration has the following
+    features:
+
+    1. Its status is either "OK" or "BAD"
+    2. Its status can be checked by running :meth:`run_once` (you must implement
+       this method)
+    3. It can depend on other Calibrations (add them using
+       :meth:`Calibration.add_dependency` in :meth:`.build_calibration`)
+    4. It can be repaired / optimized by running :meth:`Calibration.fix_state`
+    5. It is also a valid ndscan :class:`~ndscan.experiment.fragment.Fragment`,
+       and so can be scanned using the usual ndscan interface
+
+    To write a new Calibration object, you must implement the :meth:`run_once`
+    method. If you need custom logic for checking state or calibrating, you can
+    also override :meth:`check_own_state` or :meth:`fix_own_state`. See the
+    documentation for each method for details of the interface.
+
+    As a fully qualified :class:`~ndscan.experiment.fragment.Fragment`, you are
+    also entitled to implement the ndscan methods such as
+    :meth:`~ndscan.experiment.fragment.Fragment.device_setup`,
+    :meth:`~ndscan.experiment.fragment.Fragment.host_setup`, etc.
+    """
+
     def __repr__(self) -> str:
         return self.__class__.__name__
 
@@ -50,7 +79,7 @@ class Calibration(Fragment):
         * What timeout applies
         * What other Calibrations this one depends on
 
-        Apart from Calibration methods, you can also call any :module:`ndscan`
+        Apart from Calibration methods, you can also call any :mod:`ndscan`
         methods available for build_fragment() in this method.
 
         Raises:
@@ -61,17 +90,53 @@ class Calibration(Fragment):
         raise NotImplementedError
 
     def run_once(self) -> None:
-        raise NotImplementedError  # TODO: decide what to do with run_once()
+        """
+        Measure the status of this :class:`.Calibration`
+
+        You must override this method to implement the logic that allows this Calibration
+        to
+
+        a) check if it is "OK"
+
+        b)  *(optional)* measure a number that can be used to quantify this
+            Calibraiton's status
+
+        This method must measure the state of the system somehow, then output a
+        :class:`.CalibrationResult` to the :class:`.ResultsChannel` "status". It
+        should also, optionally, output a float to the :class:`.ResultsChannel`
+        "data" which could be used to optimize the :class:`.Calibration`.
+
+        This method has access to the usual :mod:`ndscan` preparations such as
+        :meth:`~ndscan.experiment.fragment.Fragment.device_setup`,
+        :meth:`~ndscan.experiment.fragment.Fragment.host_setup` etc, and may be
+        a kernel. See the documentation for
+        :class:`~ndscan.experiment.fragment.Fragment` for details.
+
+        TODO: Confirm that CalibrationResult types work on kernels
+        """
+        raise NotImplementedError
 
     def build_fragment(self, *args, **kwargs) -> None:
         """
         Set up the calibration
+
+        Initialize this Calibration, setting up the "data" and "status"
+        :class:`ndscan.experiment.result_channels.ResultChannel` objects which
+        receive results from a single check of the Calibration.
+
+        Do not call this method yourself: it will be called by the ndscan
+        machinery.
         """
         self.__timeout = 0
-        # self.__dependencies = []
         # self.__optimizable_params = []
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
+
+        # Add results channels for measurements of the Calibration's state
+        self.setattr_result("status", OpaqueChannel)
+        self.setattr_result("data")
+        self.status: OpaqueChannel
+        self.data: FloatChannel
 
         self.__in_build_calibration = True
         self.build_calibration()
@@ -88,28 +153,28 @@ class Calibration(Fragment):
 
         This method can only be called during the build() phase.
 
-        The syntax for this method is exactly the same as for :method:
-        `ndscan.experiment.Fragment.setattr_param`, but also requires minimum
-        and maximum bounds for the optimizer. Note that these may differ from
-        the min/max bounds specified by the param_class instance.
+        The syntax for this method is exactly the same as for
+        :meth:`ndscan.experiment.fragment.Fragment.setattr_param`, but also requires
+        minimum and maximum bounds for the optimizer. Note that these may differ
+        from the min/max bounds specified by the param_class instance.
 
-        For now, only :class:`ndscan.experiment.parameters.FloatParam`s are
-        supported.
+        For now, only :class:`ndscan.experiment.parameters.FloatParam` objects
+        are supported.
 
         Parameters created via this method will behave exactly the same as
         normal ndscan parameters, except they'll also be optimized during
-        calibrate() routines.
+        :meth:`.calibrate` routines.
 
         Args:
             name (str): The parameter name, to be part of its FQN. Must be a
             valid Python
                         identifier; the parameter handle will be accessible as
                         ``self.<name>``.
-            description (str): The human-readable parameter name.
-            min (float): Minimum value for the optimizer to try
-            max (float): Maximum value for the optimizer to try
-            args: Any extra arguments to pass to the ``param_class`` constructor.
-            kwargs: Any extra keyword arguments to pass to the the ``param_class``
+            description (str): The human-readable parameter name. min (float):
+            Minimum value for the optimizer to try max (float): Maximum value
+            for the optimizer to try args: Any extra arguments to pass to the
+            ``param_class`` constructor. kwargs: Any extra keyword arguments to
+            pass to the the ``param_class``
                     constructor.
 
         Returns:
@@ -140,7 +205,7 @@ class Calibration(Fragment):
             dep_calibration (Type["Calibration"]): The Calibration class to add as a dependency
         """
         if not self.__in_build_calibration:
-            return TypeError("This method must only be called in build_calibration()")
+            raise TypeError("This method must only be called in build_calibration()")
 
         if name is None:
             name = dep_calibration_class.__name__
@@ -162,9 +227,8 @@ class Calibration(Fragment):
             ] = dep_calibration_object
 
             dag.add_to_dependency_map(self, dep_calibration_object)
-            # self.__dependencies.append(dep_calibration_object)
 
-    def get_dependencies(self):
+    def _get_dependencies(self):
         return dag.get_dependencies(self)
 
     def set_timeout(self, timeout: float):
@@ -175,10 +239,10 @@ class Calibration(Fragment):
         This method can only be called during the build() phase.
 
         After this timeout has elapsed, future calls to
-        :method:`Calibration.guess_state` will return a
-        :class:`CalibrationResult` of type BAD_EXPIRED. This will trigger a
-        check of the process via a call to :method: `Calibration.check_state` on
-        the next request.
+        :meth:`Calibration.guess_state` will return a :class:`CalibrationResult`
+        of type :any:`CalibrationResult.BAD_EXPIRED`. This will trigger a check
+        of the process via a call to :meth:`Calibration.check_state` on the next
+        request.
 
         If this method is not called, timeout defaults to 0 seconds.
 
@@ -208,11 +272,11 @@ class Calibration(Fragment):
         """
         # Iterate over the dependencies, starting with the ones furthest away, and check their states
         for dep in dag.get_dependencies(self):
-            state = dep.guess_own_state()
+            state = dep._guess_own_state()
             if not (state & CalibrationResult.OK):
                 return state
 
-        return self.guess_own_state()
+        return self._guess_own_state()
 
     def check_state(self, force=False, continue_on_fail=False) -> CalibrationResult:
         """
@@ -220,7 +284,7 @@ class Calibration(Fragment):
 
         This method will perform quick measurements where necessairy to update
         any expired / bad / invalid Calibrations. If a dependent Calibration is
-        still within its timeout, it won't be checked unless force==True.
+        still within its timeout, it won't be checked unless `force==True`.
 
         Note that this method will return as soon as a problem is found, so it
         is not guaranteed that all dependents were checked unless the result is
@@ -234,9 +298,10 @@ class Calibration(Fragment):
                                     we encounter a failure.
 
         Returns:
-            CalibrationResult:  Result of the checks. If continue_on_fail was
-                                passed, this is the bitwise combination of all results; otherwise it
-                                is the first bad result, or OK.
+            CalibrationResult:
+                Result of the checks. If continue_on_fail was
+                passed, this is the bitwise combination of all results;
+                otherwise it is the first bad result, or OK.
         """
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
@@ -244,7 +309,7 @@ class Calibration(Fragment):
 
         deps = dag.get_dependencies(self)
         for dep in deps:
-            current_state = dep.guess_own_state()
+            current_state = dep._guess_own_state()
             if force or current_state != CalibrationResult.OK:
                 r |= dep._do_check_own_state()
                 if r != CalibrationResult.OK and not continue_on_fail:
@@ -270,17 +335,18 @@ class Calibration(Fragment):
                                     fine. Defaults to False.
 
         Returns:
-            CalibrationResult:  Result of the checks. If continue_on_fail was
-                                passed, this is the bitwise combination of all
-                                results; otherwise it is the first bad result,
-                                or OK.
+            CalibrationResult:
+                Result of the checks. If continue_on_fail was
+                passed, this is the bitwise combination of all
+                results; otherwise it is the first bad result,
+                or OK.
         """
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
         deps = dag.get_dependencies(self)
         logger.debug(f"Fixing all dependencies of {self.__class__.__name__}")
         for dep in deps:
-            current_state = dep.guess_own_state()
+            current_state = dep._guess_own_state()
             logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
 
             if current_state & CalibrationResult.BAD_EXPIRED and not force:
@@ -317,7 +383,7 @@ class Calibration(Fragment):
 
         return self.__most_recent_check_result
 
-    def guess_own_state(self) -> CalibrationResult:
+    def _guess_own_state(self) -> CalibrationResult:
         if (
             self.__most_recent_check_result is None
             or self.__most_recent_check_timestamp is None
@@ -331,16 +397,64 @@ class Calibration(Fragment):
         expires_at = self.__most_recent_check_timestamp + self.__timeout
         if time_now > expires_at:
             logger.debug(
-                f"Guess own state of {self.__class__} failed: data is stale (time = {time_now}, expired at {expires_at}, timeout = {self.__timeout})"
+                "Guess own state of %s failed: data is stale (time = %s, expired at %s, timeout = %s)",
+                self.__class__,
+                time_now,
+                expires_at,
+                self.__timeout,
             )
             self.__most_recent_check_result = CalibrationResult.BAD_EXPIRED
 
         return self.__most_recent_check_result
 
     def check_own_state(self) -> CalibrationResult:
-        raise NotImplementedError
+        """
+        Check the state of this Calibration
+
+        This default implementation checks the state of this Calibration by
+        running the :meth:`~.run_once` method and collecting the results from
+        the two :class:`~ndscan.experiment.result_channels.ResultChannel`
+        channels: "data" and "status".
+
+        If you prefer, you can override this method to implement your own check
+        logic.
+
+        Returns:
+            CalibrationResult:  Result of the check
+        """
+        results = run_fragment_once(self)
+        status = results[self.status]
+        # data = results[self.data]
+
+        if status is None:
+            raise NotImplementedError(
+                "run_once methods must push a CalibrationResult state to the 'status' OutputChannel"
+            )
+
+        return status
 
     def fix_own_state(self) -> None:
+        """
+        Attempt to fix this Calibration
+
+        Attempt to optimize the output of this Calibration by calling
+        :meth:`.run_once` and inspecting the "data" :class:`.ResultsChannel`
+        while varying the optimizable parameters (see
+        :meth:`.setattr_param_optimizable`). How this optimization occurs is an
+        implementation detail.
+
+        By the end of the optimization, the output of :meth:`run_once` should be
+        :any:`CalibrationResult.OK`.
+
+        Override this method to implement your own algorithm to make this
+        Calibration "OK".
+
+        TODO: write this method
+
+        Raises:
+            CalibrationError:
+                Raised if the algorithm fails to fix this Calibration.
+        """
         raise NotImplementedError
 
     def _get_dag(self):

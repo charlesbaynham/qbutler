@@ -6,21 +6,21 @@ class GoodCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
 class BadCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.BAD_DATA
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.BAD_DATA)
 
 
-def test_good_and_bad_calibrations_work_as_expected(calibration_factory):
-    c_good = calibration_factory(GoodCalibration)
-    c_bad = calibration_factory(BadCalibration)
+def test_good_and_bad_calibrations_work_as_expected(experiment_factory):
+    c_good = experiment_factory(GoodCalibration)
+    c_bad = experiment_factory(BadCalibration)
 
     assert c_good.check_state() == CalibrationResult.OK
     assert c_bad.check_state() == CalibrationResult.BAD_DATA
@@ -30,26 +30,26 @@ class CalibrationWithGoodDependency(Calibration):
     def build_calibration(self):
         self.add_dependency(GoodCalibration)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
 class CalibrationWithBadDependency(Calibration):
     def build_calibration(self):
         self.add_dependency(BadCalibration)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
-def test_inherit_good(calibration_factory):
-    c = calibration_factory(CalibrationWithGoodDependency)
+def test_inherit_good(experiment_factory):
+    c = experiment_factory(CalibrationWithGoodDependency)
 
     assert c.check_state() == CalibrationResult.OK
 
 
-def test_inherit_bad(calibration_factory):
-    c = calibration_factory(CalibrationWithBadDependency)
+def test_inherit_bad(experiment_factory):
+    c = experiment_factory(CalibrationWithBadDependency)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
@@ -59,16 +59,16 @@ class CalibrationWithRepeatedBadDependencies(Calibration):
         self.add_dependency(BadCalibration, "dep1")
         self.add_dependency(BadCalibration, "dep2")
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
 class AlternativeBadCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.BAD_DATA
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.BAD_DATA)
 
 
 class CalibrationWithMultipleBadDependencies(Calibration):
@@ -76,12 +76,12 @@ class CalibrationWithMultipleBadDependencies(Calibration):
         self.add_dependency(BadCalibration)
         self.add_dependency(AlternativeBadCalibration)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
-def test_inherited_two_bad(calibration_factory):
-    c = calibration_factory(CalibrationWithMultipleBadDependencies)
+def test_inherited_two_bad(experiment_factory):
+    c = experiment_factory(CalibrationWithMultipleBadDependencies)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
@@ -91,24 +91,24 @@ class CalibrationWithOneBadOneGoodDep(Calibration):
         self.add_dependency(BadCalibration)
         self.add_dependency(GoodCalibration)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
-def test_inherited_one_bad_one_good(calibration_factory):
-    c = calibration_factory(CalibrationWithOneBadOneGoodDep)
-
-    assert c.check_state() == CalibrationResult.BAD_DATA
-
-
-def test_inherited_two_repeated_bad(calibration_factory):
-    c = calibration_factory(CalibrationWithRepeatedBadDependencies)
+def test_inherited_one_bad_one_good(experiment_factory):
+    c = experiment_factory(CalibrationWithOneBadOneGoodDep)
 
     assert c.check_state() == CalibrationResult.BAD_DATA
 
 
-def test_can_rename_calibrations(calibration_factory):
-    c = calibration_factory(CalibrationWithRepeatedBadDependencies)
+def test_inherited_two_repeated_bad(experiment_factory):
+    c = experiment_factory(CalibrationWithRepeatedBadDependencies)
+
+    assert c.check_state() == CalibrationResult.BAD_DATA
+
+
+def test_can_rename_calibrations(experiment_factory):
+    c = experiment_factory(CalibrationWithRepeatedBadDependencies)
 
     assert hasattr(c, "dep1")
     assert hasattr(c, "dep2")
