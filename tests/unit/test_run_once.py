@@ -17,8 +17,8 @@ class CalibrationWithResults(Calibration):
         self.data.push(99.0)
 
 
-def test_can_get_results_from_run_once(experiment_factory):
-    c = experiment_factory(CalibrationWithResults)
+def test_can_get_results_from_run_once(fragment_factory):
+    c = fragment_factory(CalibrationWithResults)
 
     results = run_fragment_once(c)
     assert results[c.data] is not None
@@ -26,7 +26,7 @@ def test_can_get_results_from_run_once(experiment_factory):
     print(results)
 
 
-def test_can_check_state(experiment_factory):
-    c: Calibration = experiment_factory(CalibrationWithResults)
+def test_can_check_state(fragment_factory):
+    c: Calibration = fragment_factory(CalibrationWithResults)
 
     c.check_state()

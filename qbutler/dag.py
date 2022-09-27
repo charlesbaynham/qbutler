@@ -1,8 +1,9 @@
 import gc
 import logging
+import weakref
 from typing import List
+from typing import Type
 from typing import TYPE_CHECKING
-from weakref import ref
 
 import networkx as nx
 
@@ -39,15 +40,15 @@ def add_to_dependency_map(cal_object, dependent_cal_object):
         global _dag_valid
         _dag_valid = False
 
-    r = ref(cal_object, invalidate_cache)
-    # Hash the weakref now so that debug calls later definitely know the ref of
+    r = weakref.ref(cal_object, invalidate_cache)
+    # Hash the weakref now so that debug calls later definitely know the weakref.ref of
     # the underlying object
     hash(r)
 
     if dependent_cal_object is None:
         _dependency_map.append((r, None))
     else:
-        r_dep = ref(dependent_cal_object, invalidate_cache)
+        r_dep = weakref.ref(dependent_cal_object, invalidate_cache)
         # Same as above hash:
         hash(r_dep)
         _dependency_map.append((r, r_dep))
@@ -77,24 +78,8 @@ def _get_graph():
 
     logger.debug("DAG cache invalid: rebuilding")
 
-    # If the dag is marked as invalid, we need to clear out any weakrefs which
-    # have gone bad due to object deletion and garbage collection
-    def both_refs_valid(refs):
-        ref_1, ref_2 = refs
-
-        return ref_1() is not None and (  # The first ref is valid
-            ref_2 is None  # The second ref never existed
-            or ref_2() is not None  # The second ref exists and is valid
-        )
-
-    gc.collect()
-    filtered_dependency_map = list(filter(both_refs_valid, _dependency_map))
-
-    logger.debug(
-        f"Reduced dependency map from {len(_dependency_map)} to {len(filtered_dependency_map)} elements"
-    )
-
-    _dependency_map = filtered_dependency_map
+    # Clear out any invalid objects from the map
+    _filter_dependency_map()
 
     # We then rebuild from the _dependency_map
     _dag = nx.DiGraph()
@@ -108,6 +93,33 @@ def _get_graph():
     _dag_valid = True
 
     return _dag
+
+
+def get_calibration_from_type(obj_type: Type["Calibration"]) -> "Calibration":
+    """
+    If the DAG cache contains a Calibration of the passed type, return the
+    instance of it
+
+    This method is used to ensure that only one instance of each Calibration
+    type is instantiated.
+
+    Returns:
+        Union[Calibration,None]:
+            Returns the already-instantiated Calibration instance if found, or
+            None if it doesn't exist.
+    """
+    global _dependency_map
+
+    # Clear out any invalid objects from the map
+    _filter_dependency_map()
+
+    # Search only the first half of the map, since all Calibrations appear first
+    # at some point
+    for ref, _ in _dependency_map:
+        if type(ref()) == obj_type:
+            return ref()
+
+    return None
 
 
 def get_graph_containing_calibration(cal: "Calibration"):
@@ -128,7 +140,9 @@ def get_graph_containing_calibration(cal: "Calibration"):
     G = _get_graph()
 
     try:
-        nodes = next(filter(lambda s: ref(cal) in s, nx.weakly_connected_components(G)))
+        nodes = next(
+            filter(lambda s: weakref.ref(cal) in s, nx.weakly_connected_components(G))
+        )
     except StopIteration:
         raise KeyError(f"Calibration {cal} not found in DAG")
 
@@ -141,7 +155,7 @@ def get_dependencies(obj, furthest_first=True) -> List:
     """
     # Get a dict of lengths of paths to all dependencies
     G = get_graph_containing_calibration(obj)
-    paths = nx.single_source_shortest_path(G, ref(obj))
+    paths = nx.single_source_shortest_path(G, weakref.ref(obj))
 
     # Convert to a list of tuples of (target, distance) with the furthest ones first
     targets_and_distances = [(t, len(p)) for t, p in paths.items()]
@@ -151,3 +165,33 @@ def get_dependencies(obj, furthest_first=True) -> List:
 
     # Dereference the weakrefs and return
     return [t() for t, _ in targets_and_distances]
+
+
+def _filter_dependency_map():
+    """
+    Clear out any weakrefs from the _dependency_map which have gone bad due to
+    object deletion and garbage collection
+    """
+    global _dag, _dag_valid, _dependency_map
+
+    def both_refs_valid(refs):
+        ref_1, ref_2 = refs
+
+        return ref_1() is not None and (  # The first weakref.ref is valid
+            ref_2 is None  # The second weakref.ref never existed
+            or ref_2() is not None  # The second weakref.ref exists and is valid
+        )
+
+    gc.collect()
+    filtered_dependency_map = list(filter(both_refs_valid, _dependency_map))
+
+    if len(_dependency_map) != len(filtered_dependency_map):
+        logger.debug(
+            "Reduced dependency map from %s to %s elements",
+            len(_dependency_map),
+            len(filtered_dependency_map),
+        )
+        _dag_valid = False
+        _dag = None
+
+    _dependency_map = filtered_dependency_map

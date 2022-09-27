@@ -12,8 +12,8 @@ class ImmediateTimeoutCalibration(Calibration):
         self.status.push(CalibrationResult.OK)
 
 
-def test_immediate_timeout(experiment_factory):
-    c: Calibration = experiment_factory(ImmediateTimeoutCalibration)
+def test_immediate_timeout(fragment_factory):
+    c: Calibration = fragment_factory(ImmediateTimeoutCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
     assert c.check_state() == CalibrationResult.OK
@@ -28,8 +28,8 @@ class ShortTimeoutCalibration(Calibration):
         self.status.push(CalibrationResult.OK)
 
 
-def test_short_timeout(experiment_factory):
-    c: Calibration = experiment_factory(ShortTimeoutCalibration)
+def test_short_timeout(fragment_factory):
+    c: Calibration = fragment_factory(ShortTimeoutCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
     assert c.check_state() == CalibrationResult.OK

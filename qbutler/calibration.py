@@ -3,22 +3,25 @@ from enum import auto
 from enum import Flag
 from time import time
 from typing import Type
-from weakref import WeakValueDictionary
 
+import numpy as np
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import FloatChannel
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment import run_fragment_once
 from ndscan.experiment.parameters import FloatParam
+from ndscan.experiment.parameters import FloatParamHandle
+from ndscan.experiment.parameters import FloatParamStore
 from ndscan.experiment.parameters import ParamHandle
+from ndscan.experiment.parameters import StringParam
 
 from . import dag
+from . import patch_ndscan  # noqa
 
 logger = logging.getLogger(__name__)
 
 
-_initialized_calibrations_cache = WeakValueDictionary()
-# TODO: get rid of this: it's redundant with the information stored in the dag namespace
+NUM_SCAN_POINT = 10
 
 
 class CalibrationError(RuntimeError):
@@ -128,9 +131,10 @@ class Calibration(ExpFragment):
         machinery.
         """
         self.__timeout = 0
-        # self.__optimizable_params = []
+        self.__optimizable_params = []
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
+        self.__optimization_type = "max"
 
         # Add results channels for measurements of the Calibration's state
         self.setattr_result("status", OpaqueChannel)
@@ -142,11 +146,31 @@ class Calibration(ExpFragment):
         self.build_calibration()
         self.__in_build_calibration = False
 
+        # Add a parameter controlling whether this calibration's data is
+        # maximized, minimized or set to zero. This is a parameter rather than
+        # an attribute so that ndscan users can override it when debugging.
+        self.setattr_param(
+            "optimization_type",
+            StringParam,
+            description="How should this Calibration be optimized?",
+            default=f"'{self.__optimization_type}'",
+        )
+
         # Register this Calibration as having been built
         dag.add_to_dependency_map(self, None)
 
+    def _param_dataset_key_from_name(self, name: str) -> str:
+        return self.__class__.__name__ + "." + name
+
     def setattr_param_optimizable(
-        self, name: str, description: str, min: float, max: float, *args, **kwargs
+        self,
+        name: str,
+        description: str,
+        min: float,
+        max: float,
+        default: float,
+        *args,
+        **kwargs,
     ) -> ParamHandle:
         """Create an ndscan parameter that's available for optimization by the
         calibrator
@@ -154,16 +178,23 @@ class Calibration(ExpFragment):
         This method can only be called during the build() phase.
 
         The syntax for this method is exactly the same as for
-        :meth:`ndscan.experiment.fragment.Fragment.setattr_param`, but also requires
-        minimum and maximum bounds for the optimizer. Note that these may differ
-        from the min/max bounds specified by the param_class instance.
+        :meth:`ndscan.experiment.fragment.Fragment.setattr_param`, but also
+        requires minimum and maximum bounds for the optimizer. Note that these
+        may differ from the min/max bounds specified by the param_class
+        instance.
 
         For now, only :class:`ndscan.experiment.parameters.FloatParam` objects
         are supported.
 
         Parameters created via this method will behave exactly the same as
-        normal ndscan parameters, except they'll also be optimized during
-        :meth:`.calibrate` routines.
+        normal ndscan parameters, except
+
+        a) They'll also be optimized during :meth:`.calibrate` routines.
+        b) They'll automatically have their default values set to load from a
+           persistent dataset with a name generated via
+           :meth:`_param_dataset_key_from_name` (as if you'd set e.g
+           ``default = 'dataset("somedataset", 123)'`` in your
+           :class:`FloatParam` setup).
 
         Args:
             name (str): The parameter name, to be part of its FQN. Must be a
@@ -183,9 +214,43 @@ class Calibration(ExpFragment):
         if not self.__in_build_calibration:
             return TypeError("This method must only be called in build_calibration()")
 
-        p = self.setattr_param(name, FloatParam, description, *args, **kwargs)
-        self._optimizable_params.append((min, max, p))
+        dataset_key = self._param_dataset_key_from_name(name)
+
+        p = self.setattr_param(
+            name,
+            FloatParam,
+            description,
+            default=f'dataset("{dataset_key}", default={default})',
+            *args,
+            **kwargs,
+        )
+        self.__optimizable_params.append((min, max, p))
         return p
+
+    def set_optimization_type(self, optimization_type: str) -> None:
+        """
+        Configure how this Calibration is optimized
+
+        Control how the default fix_state algorithm will optimize this
+        Calibration, based on the "data" result output from :meth:`.run_once`.
+
+        Options are:
+
+        "max": Attempt to maximise the result
+        "min": Attempt to minimixe
+        "zero": Attempt to set the result to zero
+
+        The default is "max".
+
+        Arguments:
+            type (str): One of "max", "min", "zero".
+        """
+        optimization_type = optimization_type.lower()
+
+        if optimization_type not in ["max", "min", "zero"]:
+            raise ValueError('type must be one of "max", "min" or "zero"')
+
+        self.__optimization_type = optimization_type
 
     def add_dependency(
         self, dep_calibration_class: Type["Calibration"], name: str = None
@@ -210,22 +275,18 @@ class Calibration(ExpFragment):
         if name is None:
             name = dep_calibration_class.__name__
 
-        if dep_calibration_class in _initialized_calibrations_cache:
+        cal_from_cache = dag.get_calibration_from_type(dep_calibration_class)
+
+        if cal_from_cache is not None:
             # If this Calibration has been already created elsewhere, don't make a
             # new copy. Instead, add the existing version as an attribute
-
-            setattr(self, name, _initialized_calibrations_cache[dep_calibration_class])
+            setattr(self, name, cal_from_cache)
         else:
             # Otherwise, initialize it as a new subfragment and add it to our
             # DAG machinery
             self.setattr_fragment(name, dep_calibration_class)
 
             dep_calibration_object = getattr(self, name)
-
-            _initialized_calibrations_cache[
-                dep_calibration_class
-            ] = dep_calibration_object
-
             dag.add_to_dependency_map(self, dep_calibration_object)
 
     def _get_dependencies(self):
@@ -362,7 +423,7 @@ class Calibration(ExpFragment):
                 current_state = dep.check_own_state()
 
                 logger.debug(
-                    f"Result of fix of {dep.__class__.__name__} = {current_state}"
+                    "Result of fix of %s = %s", dep.__class__.__name__, current_state
                 )
 
                 if current_state != CalibrationResult.OK:
@@ -424,7 +485,6 @@ class Calibration(ExpFragment):
         """
         results = run_fragment_once(self)
         status = results[self.status]
-        # data = results[self.data]
 
         if status is None:
             raise NotImplementedError(
@@ -449,13 +509,59 @@ class Calibration(ExpFragment):
         Override this method to implement your own algorithm to make this
         Calibration "OK".
 
-        TODO: write this method
-
         Raises:
             CalibrationError:
                 Raised if the algorithm fails to fix this Calibration.
         """
-        raise NotImplementedError
+        if len(self.__optimizable_params) == 0:
+            raise ValueError(
+                f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
+            )
+        elif len(self.__optimizable_params) > 1:
+            raise NotImplementedError(
+                f"Calibration {self.__class__} cannot be optimized because optimizations of >1 params have not yet been implemented"
+            )
+
+        p_min, p_max, p_handle = self.__optimizable_params[0]
+        p_handle: FloatParamHandle
+
+        points = np.linspace(p_min, p_max, NUM_SCAN_POINT).tolist()
+
+        # Override the parameter we're scanning to a new ParamStore
+        _, p_store = self.override_param(p_handle.name, p_min)
+        p_store: FloatParamStore
+
+        output_status = []
+        output_data = []
+
+        for point in points:
+            p_store.set_value(point)
+            results = run_fragment_once(self)
+            output_status.append(results[self.status])
+            output_data.append(results[self.data])
+
+        strategy = self.optimization_type.get()
+
+        if strategy != "max":
+            # TODO: implement "min" and "zero" strategies
+            raise NotImplementedError("Not done yet")
+
+        # Set the best param
+        k_max = np.argmax(output_data)
+        best_val = output_data[k_max]
+
+        self.set_dataset(
+            self._param_dataset_key_from_name(p_handle.name),
+            best_val,
+            broadcast=True,
+            persist=True,
+        )
+
+        if output_status[k_max] != CalibrationResult.OK:
+            raise CalibrationError("The best parameters found did not pass the check")
+
+        self.reset_param(p_handle.name)
+        self.recompute_param_defaults()
 
     def _get_dag(self):
         return dag.get_graph_containing_calibration(self)

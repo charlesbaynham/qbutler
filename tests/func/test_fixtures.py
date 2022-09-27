@@ -11,12 +11,12 @@ def test_dataset_mgr(dataset_mgr):
     return dataset_mgr
 
 
-def test_experiment_factory(experiment_factory):
+def test_fragment_factory(fragment_factory):
     class MinimalCalibration(Calibration):
         def build_calibration(self):
             pass
 
-    experiment_factory(MinimalCalibration)
+    fragment_factory(MinimalCalibration)
 
 
 def test_full_experiment_runner(build_and_run_experiment):

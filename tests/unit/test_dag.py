@@ -1,11 +1,6 @@
 from weakref import ref
 
-import matplotlib.pyplot as plt
-import networkx as nx
-import pytest
-
-from qbutler.calibration import Calibration
-from qbutler.calibration import CalibrationResult
+from qbutler import dag
 from qbutler.dag import _get_graph
 from qbutler.dag import add_to_dependency_map
 from qbutler.dag import get_dependencies
@@ -190,3 +185,24 @@ def test_get_dependencies_forking(plot_graph):
         or a_deps == [d, b1, c, b2, a]
         or a_deps == [d, c, b1, b2, a]
     )
+
+
+def test_get_type_from_cache():
+    c = DummyCal("hello")
+    dag.add_to_dependency_map(c, None)
+
+    assert dag.get_calibration_from_type(DummyCal) == c
+    assert dag.get_calibration_from_type(DummyCal).id == "hello"
+
+
+def test_get_calibrataion_from_cache(fragment_factory):
+    from qbutler.calibration import Calibration
+
+    class RealCal(Calibration):
+        def build_calibration(self):
+            pass
+
+    c = fragment_factory(RealCal)
+    dag.add_to_dependency_map(c, None)
+
+    assert dag.get_calibration_from_type(RealCal) == c
