@@ -19,6 +19,7 @@
 # Code linting
 pre-commit
 black
+pylint
 
 # Unit testing
 pytest

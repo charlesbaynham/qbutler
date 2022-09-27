@@ -1,3 +1,5 @@
+from artiq.experiment import EnvExperiment
+
 from qbutler.calibration import Calibration
 
 
@@ -9,9 +11,15 @@ def test_dataset_mgr(dataset_mgr):
     return dataset_mgr
 
 
-def test_calibration_factory(calibration_factory):
+def test_experiment_factory(experiment_factory):
     class MinimalCalibration(Calibration):
         def build_calibration(self):
             pass
 
-    calibration_factory(MinimalCalibration)
+    experiment_factory(MinimalCalibration)
+
+
+def test_full_experiment_runner(build_and_run_experiment):
+    from hello_experiment import HelloExperiment
+
+    build_and_run_experiment(HelloExperiment)

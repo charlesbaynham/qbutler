@@ -8,12 +8,12 @@ class ImmediateTimeoutCalibration(Calibration):
     def build_calibration(self):
         self.set_timeout(0)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
-def test_immediate_timeout(calibration_factory):
-    c: Calibration = calibration_factory(ImmediateTimeoutCalibration)
+def test_immediate_timeout(experiment_factory):
+    c: Calibration = experiment_factory(ImmediateTimeoutCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
     assert c.check_state() == CalibrationResult.OK
@@ -24,12 +24,12 @@ class ShortTimeoutCalibration(Calibration):
     def build_calibration(self):
         self.set_timeout(0.1)
 
-    def check_own_state(self) -> CalibrationResult:
-        return CalibrationResult.OK
+    def run_once(self) -> None:
+        self.status.push(CalibrationResult.OK)
 
 
-def test_short_timeout(calibration_factory):
-    c: Calibration = calibration_factory(ShortTimeoutCalibration)
+def test_short_timeout(experiment_factory):
+    c: Calibration = experiment_factory(ShortTimeoutCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
     assert c.check_state() == CalibrationResult.OK
