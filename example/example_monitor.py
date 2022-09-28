@@ -47,5 +47,5 @@ class RandomMonitor(Calibration):
 
 
 MyMonitorMaster = make_monitor_controller(
-    "MyMonitorMaster", monitors=[SimpleMonitor, RandomMonitor]
+    "MyMonitorMaster", monitors={"simple": SimpleMonitor, "random": RandomMonitor}
 )

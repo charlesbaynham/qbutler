@@ -37,8 +37,9 @@ MonitorMaster
 """
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from typing import Callable
+from typing import Dict
 from typing import List
 from typing import Type
 
@@ -54,8 +55,8 @@ logger = logging.getLogger(__name__)
 
 def make_monitor_controller(
     name: str,
-    monitors: List[Type[Calibration]],
-    data_logger: Callable[[Calibration, str, CalibrationResult, float], None] = None,
+    monitors: Dict[str, Type[Calibration]],
+    data_logger: Callable[[Calibration, str, CalibrationResult, Any], None] = None,
     devices: List[str] = [],
 ):
     """
@@ -88,7 +89,7 @@ def make_monitor_controller(
                 self.data.push(123.0)
 
         MyMonitorMaster = make_monitor_controller(
-            "MyMonitorMaster", monitors=[SimpleMonitor]
+            "MyMonitorMaster", monitors={"simple": SimpleMonitor}
         )
 
     Parameters:
@@ -96,8 +97,8 @@ def make_monitor_controller(
         name (str):
             Name of the monitor master to be created
 
-        monitors (list):
-            A list of Monitor classes which will be constructed and monitored.
+        monitors (dict):
+            A dict of names -> Monitor classes which will be constructed and monitored.
 
         data_logger (callable):
             A callback which should log the results of the checks somehow (e.g.
@@ -112,15 +113,15 @@ def make_monitor_controller(
             self.setattr_device("scheduler")
             self.scheduler: Scheduler
 
-            self._monitors: List[Calibration] = []
-            self.monitor_tasks: List[asyncio.Task] = []
+            self._monitors: Dict[str, Calibration] = {}
+            self._monitor_tasks: Dict[str, asyncio.Task] = {}
             self._stop_now = False
 
-            for monitor_type in monitors:
-                self.setattr_calibration(monitor_type)
+            for monitor_name, monitor_type in monitors.items():
+                self.setattr_calibration(monitor_type, name=monitor_name)
 
-                monitor = getattr(self, monitor_type.__name__)
-                self._monitors.append(monitor)
+                monitor = getattr(self, monitor_name)
+                self._monitors[monitor_name] = monitor
 
                 if monitor.get_timeout() == 0:
                     raise ValueError(
@@ -142,7 +143,7 @@ def make_monitor_controller(
             await self.start_monitors()
             monitor_task = asyncio.create_task(self.monitor_monitors())
             await self.wait_for_termination()
-            for task in self.monitor_tasks + [monitor_task]:
+            for task in list(self._monitor_tasks.values()) + [monitor_task]:
                 task.cancel()
 
         async def monitor_monitors(self):
@@ -150,10 +151,9 @@ def make_monitor_controller(
             Monitor the monitors,
             """
             while True:
-
-                for monitor_task in self.monitor_tasks:
+                for monitor_name, monitor_task in self._monitor_tasks.items():
                     logger.debug(
-                        "Checking monitor's task for monitor_task %s", monitor_task
+                        "Checking monitor's task for monitor_task %s", monitor_name
                     )
                     if monitor_task.done():
                         if monitor_task.exception():
@@ -162,12 +162,13 @@ def make_monitor_controller(
                             except Exception:
                                 logger.error(
                                     "Monitor %s failed with exception",
+                                    monitor_name,
                                     exc_info=True,
                                 )
 
-                        self.monitor_tasks.remove(monitor_task)
+                        self._monitor_tasks.pop(monitor_name)
 
-                if not self.monitor_tasks:
+                if not self._monitor_tasks:
                     logger.error("All monitor tasks have ended")
                     self._stop_now = True
                     return
@@ -188,28 +189,28 @@ def make_monitor_controller(
                 await asyncio.sleep(0.5)
 
         async def start_monitors(self):
-            for monitor in self._monitors:
-                logger.debug("Launching monitor %s", monitor)
-                self.monitor_tasks.append(
-                    asyncio.create_task(self.run_monitor(monitor))
+            for name, monitor in self._monitors.items():
+                logger.debug("Launching monitor %s", name)
+                self._monitor_tasks[name] = asyncio.create_task(
+                    self.run_monitor(name, monitor)
                 )
 
-        async def run_monitor(self, monitor: Calibration):
+        async def run_monitor(self, name: str, monitor: Calibration):
             timeout = monitor.get_timeout()
 
-            logger.debug("Monitor %s started with timeout %s", monitor, timeout)
+            logger.debug("Monitor %s started with timeout %s", name, timeout)
 
             while True:
                 loop = asyncio.get_event_loop()
 
-                logger.debug("Checking state of monitor %s", monitor)
+                logger.debug("Checking state of monitor %s", name)
                 state, data = await loop.run_in_executor(None, monitor.check_state)
 
-                logger.debug("Monitor %s reported state %s/%s", monitor, state, data)
+                logger.debug("Monitor %s reported state %s/%s", name, state, data)
 
-                self.data_logger(monitor.__class__.__name__, state, data)
+                self.data_logger(name, state, data)
 
-                logger.debug("Monitor %s sleeping for %s seconds", monitor, timeout)
+                logger.debug("Monitor %s sleeping for %s seconds", name, timeout)
 
                 await asyncio.sleep(timeout)
 

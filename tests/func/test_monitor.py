@@ -16,7 +16,7 @@ def db_logger(self, name, state, value):
 
 MonitorMasterWithMockDB = make_monitor_controller(
     "MonitorMasterWithMockDB",
-    monitors=[SimpleMonitor, RandomMonitor],
+    monitors={"simple": SimpleMonitor, "random": RandomMonitor},
     data_logger=db_logger,
     devices=["mock_db_writer"],
 )
@@ -129,5 +129,5 @@ def test_monitor_logs_to_db(build_experiment, mock_core, mock_db_writer):
 
     db_called_names = [d[0][0] for d in mock_db_writer.write.call_args_list]
 
-    assert "SimpleMonitor" in db_called_names
-    assert "RandomMonitor" in db_called_names
+    assert "simple" in db_called_names
+    assert "random" in db_called_names

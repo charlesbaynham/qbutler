@@ -98,18 +98,21 @@ class Calibration(ExpFragment):
         """
         Measure the status of this :class:`.Calibration`
 
-        You must override this method to implement the logic that allows this Calibration
-        to
+        You must override this method to implement the logic that allows this
+        Calibration to
 
         a) check if it is "OK"
 
-        b)  *(optional)* measure a number that can be used to quantify this
-            Calibraiton's status
+        b)  *(optional)* measure a quantity that can be used to quantify this
+            Calibration's status
 
         This method must measure the state of the system somehow, then output a
         :class:`.CalibrationResult` to the :class:`.ResultsChannel` "status". It
-        should also, optionally, output a float to the :class:`.ResultsChannel`
+        should also, optionally, output a value to the :class:`.ResultsChannel`
         "data" which could be used to optimize the :class:`.Calibration`.
+        :meth:`fix_own_state` can handle basic algorithms for optimizing as long
+        as the "data" output is a float. If not, you can override it: see te
+        docs for :meth:`fix_own_state`.
 
         This method has access to the usual :mod:`ndscan` preparations such as
         :meth:`~ndscan.experiment.fragment.Fragment.device_setup`,
@@ -143,9 +146,9 @@ class Calibration(ExpFragment):
 
         # Add results channels for measurements of the Calibration's state
         self.setattr_result("status", OpaqueChannel)
-        self.setattr_result("data")
+        self.setattr_result("data", OpaqueChannel)
         self.status: OpaqueChannel
-        self.data: FloatChannel
+        self.data: OpaqueChannel
 
         self.__in_build_calibration = True
         self.build_calibration()
@@ -570,6 +573,13 @@ class Calibration(ExpFragment):
             results = run_fragment_once(self)
             output_status.append(results[self.status])
             output_data.append(results[self.data])
+
+            try:
+                float(results[self.data])
+            except ValueError:
+                raise ValueError(
+                    "Results %s could not be converted to a float", results[self.data]
+                )
 
         strategy = self.optimization_type.get()
 
