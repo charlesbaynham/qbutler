@@ -35,7 +35,7 @@ def test_can__guess_own_state(fragment_factory):
 def test_can_check_own_state(fragment_factory):
     c = fragment_factory(MinimalCalibration)
 
-    assert c.check_own_state() == CalibrationResult.OK
+    assert c.check_own_state()[0] == CalibrationResult.OK
 
 
 def test_can_guess_all_states(fragment_factory):
@@ -47,7 +47,7 @@ def test_can_guess_all_states(fragment_factory):
 def test_can_check_all_states(fragment_factory):
     c = fragment_factory(MinimalCalibration)
 
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state() == (CalibrationResult.OK, None)
 
 
 def test_can_make_fragment(fragment_factory):

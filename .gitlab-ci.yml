@@ -67,7 +67,7 @@ pytest:
   extends: .deps
   stage: "Test"
   script:
-    - nix run .#pytest
+    - nix run .#pytest -- --runslow
   coverage: '/^TOTAL.+?(\d+\%)$/'
   needs: []
   artifacts:
@@ -75,26 +75,6 @@ pytest:
     reports:
       junit: report.xml
 
-# pytest_slows:
-#     extends: .deps
-#     stage: "Full test"
-#     script:
-#       - nix run .#pytest -- --runslow
-#     rules:
-#       # Run for scheduled or triggered builds
-#       - if: '$CI_PIPELINE_SOURCE == "trigger"'
-#         when: always
-#       - if: '$CI_PIPELINE_SOURCE == "schedule"'
-#         when: always
-#       # Run for tags
-#       - if: '$CI_COMMIT_TAG'
-#         when: always
-#       # And allow manual runs
-#       - if: '$CI_COMMIT_BRANCH'
-#         when: manual
-#         allow_failure: true
-#     coverage: '/^TOTAL.+?(\d+\%)$/'
-#     needs: []
 
 ### Documentation ###
 
@@ -108,6 +88,11 @@ make_docs:
     - mkdir html_out && cp -r result/* html_out/.
     - nix build .#docs_latex
     - mkdir latex && cp -r result/* latex/.
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: always
+    - if: $CI_COMMIT_TAG
 
   artifacts:
     paths:

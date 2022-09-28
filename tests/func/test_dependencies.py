@@ -22,8 +22,8 @@ def test_good_and_bad_calibrations_work_as_expected(fragment_factory):
     c_good = fragment_factory(GoodCalibration)
     c_bad = fragment_factory(BadCalibration)
 
-    assert c_good.check_state() == CalibrationResult.OK
-    assert c_bad.check_state() == CalibrationResult.BAD_DATA
+    assert c_good.check_state()[0] == CalibrationResult.OK
+    assert c_bad.check_state()[0] == CalibrationResult.BAD_DATA
 
 
 class CalibrationWithGoodDependency(Calibration):
@@ -45,13 +45,13 @@ class CalibrationWithBadDependency(Calibration):
 def test_inherit_good(fragment_factory):
     c = fragment_factory(CalibrationWithGoodDependency)
 
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
 
 
 def test_inherit_bad(fragment_factory):
     c = fragment_factory(CalibrationWithBadDependency)
 
-    assert c.check_state() == CalibrationResult.BAD_DATA
+    assert c.check_state()[0] == CalibrationResult.BAD_DEPS
 
 
 class CalibrationWithRepeatedBadDependencies(Calibration):
@@ -83,7 +83,7 @@ class CalibrationWithMultipleBadDependencies(Calibration):
 def test_inherited_two_bad(fragment_factory):
     c = fragment_factory(CalibrationWithMultipleBadDependencies)
 
-    assert c.check_state() == CalibrationResult.BAD_DATA
+    assert c.check_state()[0] == CalibrationResult.BAD_DEPS
 
 
 class CalibrationWithOneBadOneGoodDep(Calibration):
@@ -98,13 +98,13 @@ class CalibrationWithOneBadOneGoodDep(Calibration):
 def test_inherited_one_bad_one_good(fragment_factory):
     c = fragment_factory(CalibrationWithOneBadOneGoodDep)
 
-    assert c.check_state() == CalibrationResult.BAD_DATA
+    assert c.check_state()[0] == CalibrationResult.BAD_DEPS
 
 
 def test_inherited_two_repeated_bad(fragment_factory):
     c = fragment_factory(CalibrationWithRepeatedBadDependencies)
 
-    assert c.check_state() == CalibrationResult.BAD_DATA
+    assert c.check_state()[0] == CalibrationResult.BAD_DEPS
 
 
 def test_can_rename_calibrations(fragment_factory):

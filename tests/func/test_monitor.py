@@ -1,12 +1,64 @@
-from example.example_monitor import MonitorMaster
+from time import sleep
+
+import pytest
+
+import example.example_monitor
+from example.example_monitor import MyMonitorMaster
+from example.example_monitor import RandomMonitor
 from qbutler.calibration import CalibrationResult
 
 
 def test_monitor_can_both_pass_and_fail(fragment_factory):
-    c = fragment_factory(MonitorMaster)
+    c = fragment_factory(RandomMonitor)
 
     c.init_params()
 
     states = [c.check_state() for _ in range(20)]
     assert not all([s == CalibrationResult.OK for s in states])
     assert not all([s == CalibrationResult.BAD_DATA for s in states])
+
+
+def test_monitor_builds(build_experiment):
+    build_experiment(MyMonitorMaster, experiment_file=example.example_monitor.__file__)
+
+
+# If the monitor is set up wrong, this test can run forever. We therefore use
+# pytest-timeout to run it in a separate process and kill it if it overruns
+@pytest.mark.timeout(5, method="thread")
+@pytest.mark.slow
+def test_monitor_runs(build_experiment):
+    import concurrent.futures
+
+    RUN_FOR = 2
+    WAIT_TIMEOUT = 4
+
+    exp = build_experiment(
+        MyMonitorMaster, experiment_file=example.example_monitor.__file__
+    )
+
+    # Run the monitor master - this will run forever unless closed
+    def run_master():
+        exp.prepare()
+        exp.run()
+
+    # Request ending of the master. This method relies on internal knowledge of
+    # ndscan and shouldn't be used by the user - they should use the scheduler
+    # to request termination in the normal way
+    def close_master():
+        print(f"Sleeping for {RUN_FOR} seconds")
+        sleep(RUN_FOR)
+        print("Requesting stop now")
+        exp.fragment.request_stop()
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        fut_exp = executor.submit(run_master)
+        fut_close = executor.submit(close_master)
+        futs = [fut_exp, fut_close]
+
+        concurrent.futures.wait(futs, timeout=WAIT_TIMEOUT)
+
+        futures_closed = all(fut.done() for fut in futs)
+
+        if not futures_closed:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise RuntimeError("The monitor did not close successfully")

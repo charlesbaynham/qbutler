@@ -2,6 +2,8 @@ import logging
 from enum import auto
 from enum import Flag
 from time import time
+from typing import Any
+from typing import Tuple
 from typing import Type
 
 import numpy as np
@@ -117,7 +119,9 @@ class Calibration(ExpFragment):
 
         TODO: Confirm that CalibrationResult types work on kernels
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "You should override this method with your own code: see the docs"
+        )
 
     def build_fragment(self, *args, **kwargs) -> None:
         """
@@ -134,6 +138,7 @@ class Calibration(ExpFragment):
         self.__optimizable_params = []
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
+        self.__most_recent_check_data = None
         self.__optimization_type = "max"
 
         # Add results channels for measurements of the Calibration's state
@@ -315,6 +320,15 @@ class Calibration(ExpFragment):
 
         self.__timeout = timeout
 
+    def get_timeout(self) -> float:
+        """
+        Gets the timeout set by :meth:`set_timeout`
+
+        Returns:
+            float: The timeout in seconds
+        """
+        return self.__timeout
+
     def guess_state(self) -> CalibrationResult:
         """
         Guess the status of this Calibration based on past measurements
@@ -339,7 +353,9 @@ class Calibration(ExpFragment):
 
         return self._guess_own_state()
 
-    def check_state(self, force=False, continue_on_fail=False) -> CalibrationResult:
+    def check_state(
+        self, force=False, continue_on_fail=False
+    ) -> Tuple[CalibrationResult, Any]:
         """
         Check the state of this Calibration and dependents
 
@@ -360,23 +376,33 @@ class Calibration(ExpFragment):
 
         Returns:
             CalibrationResult:
-                Result of the checks. If continue_on_fail was
-                passed, this is the bitwise combination of all results;
-                otherwise it is the first bad result, or OK.
+                Result of the checks. If continue_on_fail was passed, this is
+                the bitwise combination of all results; otherwise it is the
+                first bad result, or OK.
+
+            Any:
+                Data from the final layer of the check, i.e. from this
+                Calibration, or None if the check failed before the final
+                layer was run.
         """
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
         r = CalibrationResult.OK
+        data = None
 
         deps = dag.get_dependencies(self)
         for dep in deps:
             current_state = dep._guess_own_state()
             if force or current_state != CalibrationResult.OK:
-                r |= dep._do_check_own_state()
+                state, data = dep._do_check_own_state()
+                r |= state
                 if r != CalibrationResult.OK and not continue_on_fail:
-                    return r
+                    if dep == deps[-1]:
+                        return r, data
+                    else:
+                        return CalibrationResult.BAD_DEPS, None
 
-        return r
+        return r, data
 
     def fix_state(self, force=False):
         """
@@ -411,16 +437,13 @@ class Calibration(ExpFragment):
             logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
 
             if current_state & CalibrationResult.BAD_EXPIRED and not force:
-                current_state = dep.check_own_state()
-                logger.debug(
-                    f"Checked state of {dep.__class__.__name__} = {current_state}"
-                )
+                current_state, current_data = dep._do_check_own_state()
 
             if current_state != CalibrationResult.OK or force:
                 logger.debug(f"Attempting fix of {dep.__class__.__name__}")
 
                 dep.fix_own_state()
-                current_state = dep.check_own_state()
+                current_state, current_data = dep.check_own_state()
 
                 logger.debug(
                     "Result of fix of %s = %s", dep.__class__.__name__, current_state
@@ -429,20 +452,27 @@ class Calibration(ExpFragment):
                 if current_state != CalibrationResult.OK:
                     self.__most_recent_check_result = CalibrationResult.BAD_DEPS
                     self.__most_recent_check_timestamp = time()
+                    self.__most_recent_check_data = current_data
 
                     raise CalibrationError(
                         f"Calibration of {dep.__class__.__name__} failed"
                     )
 
-    def _do_check_own_state(self) -> CalibrationResult:
-        self.__most_recent_check_result = self.check_own_state()
+    def _do_check_own_state(self) -> Tuple[CalibrationResult, Any]:
+        (
+            self.__most_recent_check_result,
+            self.__most_recent_check_data,
+        ) = self.check_own_state()
         self.__most_recent_check_timestamp = time()
 
         logger.debug(
-            f"Checked own state of {self.__class__}: result {self.__most_recent_check_result} at time {self.__most_recent_check_timestamp}"
+            "Checked own state of %s: result %s at time %s",
+            self.__class__.__name__,
+            self.__most_recent_check_result,
+            self.__most_recent_check_timestamp,
         )
 
-        return self.__most_recent_check_result
+        return self.__most_recent_check_result, self.__most_recent_check_data
 
     def _guess_own_state(self) -> CalibrationResult:
         if (
@@ -468,7 +498,7 @@ class Calibration(ExpFragment):
 
         return self.__most_recent_check_result
 
-    def check_own_state(self) -> CalibrationResult:
+    def check_own_state(self) -> Tuple[CalibrationResult, Any]:
         """
         Check the state of this Calibration
 
@@ -485,13 +515,14 @@ class Calibration(ExpFragment):
         """
         results = run_fragment_once(self)
         status = results[self.status]
+        data = results[self.data]
 
         if status is None:
             raise NotImplementedError(
                 "run_once methods must push a CalibrationResult state to the 'status' OutputChannel"
             )
 
-        return status
+        return status, data
 
     def fix_own_state(self) -> None:
         """

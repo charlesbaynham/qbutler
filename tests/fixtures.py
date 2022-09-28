@@ -3,6 +3,7 @@ import inspect
 import logging
 from typing import Callable
 from typing import Type
+from unittest.mock import MagicMock
 
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
@@ -14,8 +15,6 @@ from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
 
-import qbutler.calibration
-from qbutler.calibration import Calibration
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +161,11 @@ def device_mgr():
 
     return DeviceManager(
         DummyDeviceDB(),
-        virtual_devices={"scheduler": DummyScheduler(), "ccb": DummyCCB()},
+        virtual_devices={
+            "scheduler": DummyScheduler(),
+            "ccb": DummyCCB(),
+            "core": MagicMock,
+        },
     )
 
 
@@ -176,22 +179,31 @@ def patch_artiq_install_hook():
 
 
 @fixture
-def build_and_run_experiment(device_mgr, dataset_mgr):
+def build_experiment(device_mgr, dataset_mgr):
     from artiq.frontend.artiq_run import _build_experiment
 
-    def build_and_run(experiment_class):
-        file = inspect.getfile(experiment_class)
+    def experiment_builder(experiment_class, experiment_file=None):
         class_name = experiment_class.__name__
+        if not experiment_file:
+            experiment_file = inspect.getfile(experiment_class)
 
         class Args:
             pass
 
         args = Args()
         args.arguments = []
-        args.file = file
+        args.file = experiment_file
         args.class_name = class_name
 
-        exp_inst = _build_experiment(device_mgr, dataset_mgr, args)
+        return _build_experiment(device_mgr, dataset_mgr, args)
+
+    return experiment_builder
+
+
+@fixture
+def build_and_run_experiment(build_experiment):
+    def build_and_run(experiment_class, experiment_file=None):
+        exp_inst = build_experiment(experiment_class, experiment_file)
         exp_inst.prepare()
         exp_inst.run()
         exp_inst.analyze()

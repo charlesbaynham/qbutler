@@ -21,11 +21,11 @@ class OverriddenFixableCalibration(Calibration):
 def test_can_fix_broken_calibration(fragment_factory):
     c: Calibration = fragment_factory(OverriddenFixableCalibration)
 
-    assert c.check_state() == CalibrationResult.BAD_DATA
+    assert c.check_state()[0] == CalibrationResult.BAD_DATA
 
     c.fix_own_state()
 
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
 
 
 class DependantCalibration(Calibration):
@@ -42,11 +42,11 @@ class DependantCalibration(Calibration):
 def test_can_fix_broken_child_calibration(fragment_factory):
     c: Calibration = fragment_factory(DependantCalibration)
 
-    assert c.check_state() == CalibrationResult.BAD_DATA
+    assert c.check_state()[0] == CalibrationResult.BAD_DEPS
 
     c.fix_state()
 
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
 
 
 def test_correct_order_fixes(fragment_factory):
