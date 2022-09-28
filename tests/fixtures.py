@@ -102,7 +102,12 @@ def mock_core():
 
 
 @fixture
-def device_mgr(mock_core):
+def mock_db_writer():
+    return Mock()
+
+
+@fixture
+def device_mgr(mock_core, mock_db_writer):
     class DummyDeviceDB:
         def __init__(self):
             self.data = Notifier({})
@@ -170,6 +175,7 @@ def device_mgr(mock_core):
             "scheduler": DummyScheduler(),
             "ccb": DummyCCB(),
             "core": mock_core,
+            "mock_db_writer": mock_db_writer,
         },
     )
 
