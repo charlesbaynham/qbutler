@@ -32,9 +32,12 @@ MonitorMaster
 - [x]   Calls check_state at an appropriate set of times, then logs the results
 
 - [x]   Uses async to do these things. I.e. the Monitors are not dependencies of some master Calibration, they're just a collection of independent Calibrations.
+
+- [ ]   Despite using async, launch each monitor in its own thread so that users can ignore the complexities of asyncronous coding
 """
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from typing import List
 from typing import Type
@@ -197,8 +200,10 @@ def make_monitor_controller(
             logger.debug("Monitor %s started with timeout %s", monitor, timeout)
 
             while True:
+                loop = asyncio.get_event_loop()
+
                 logger.debug("Checking state of monitor %s", monitor)
-                state, data = monitor.check_state()
+                state, data = await loop.run_in_executor(None, monitor.check_state)
 
                 logger.debug("Monitor %s reported state %s/%s", monitor, state, data)
 
