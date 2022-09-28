@@ -3,7 +3,7 @@ import inspect
 import logging
 from typing import Callable
 from typing import Type
-from unittest.mock import MagicMock
+from unittest.mock import Mock
 
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
@@ -97,7 +97,12 @@ def plot_graph(tmp_path):
 
 
 @fixture
-def device_mgr():
+def mock_core():
+    return Mock()
+
+
+@fixture
+def device_mgr(mock_core):
     class DummyDeviceDB:
         def __init__(self):
             self.data = Notifier({})
@@ -164,7 +169,7 @@ def device_mgr():
         virtual_devices={
             "scheduler": DummyScheduler(),
             "ccb": DummyCCB(),
-            "core": MagicMock,
+            "core": mock_core,
         },
     )
 

@@ -26,7 +26,7 @@ def test_monitor_builds(build_experiment):
 # pytest-timeout to run it in a separate process and kill it if it overruns
 @pytest.mark.timeout(5, method="thread")
 @pytest.mark.slow
-def test_monitor_runs(build_experiment):
+def test_monitor_runs(build_experiment, mock_core):
     import concurrent.futures
 
     RUN_FOR = 2
@@ -62,3 +62,6 @@ def test_monitor_runs(build_experiment):
         if not futures_closed:
             executor.shutdown(wait=False, cancel_futures=True)
             raise RuntimeError("The monitor did not close successfully")
+
+    # Check that the monitor didn't try to access the core
+    assert len(mock_core.mock_calls) == 0
