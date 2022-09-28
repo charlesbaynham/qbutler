@@ -16,7 +16,7 @@ def test_immediate_timeout(fragment_factory):
     c: Calibration = fragment_factory(ImmediateTimeoutCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
 
 
@@ -32,7 +32,7 @@ def test_short_timeout(fragment_factory):
     c: Calibration = fragment_factory(ShortTimeoutCalibration)
 
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
     assert c.guess_state() == CalibrationResult.OK
     sleep(0.2)
     assert c.guess_state() == CalibrationResult.BAD_EXPIRED

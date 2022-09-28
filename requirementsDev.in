@@ -23,6 +23,7 @@ pylint
 
 # Unit testing
 pytest
+pytest-timeout
 coverage
 notebook
 matplotlib

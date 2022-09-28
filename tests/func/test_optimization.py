@@ -23,12 +23,34 @@ def test_can_optimize(fragment_factory):
     c.fix_state(force=True)
 
 
+def test_cannot_optimize_without_params(fragment_factory):
+    class Cali(Calibration):
+        def build_calibration(self):
+            pass
+
+    c = fragment_factory(Cali)
+
+    with pytest.raises(ValueError):
+        c.fix_state(force=True)
+
+
+def test_cannot_optimize_without_run_once(fragment_factory):
+    class Cali(Calibration):
+        def build_calibration(self):
+            self.setattr_param_optimizable("test", "A test", 0, 1, default=0.5)
+
+    c = fragment_factory(Cali)
+
+    with pytest.raises(NotImplementedError):
+        c.fix_state(force=True)
+
+
 def test_optimize_once_works(fragment_factory):
     c = fragment_factory(ParamsCalibration)
     assert c.test.get() == 0.5
     c.fix_state(force=True)
     assert c.test.get() == 1
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
 
 
 def test_can_optimize_twice(fragment_factory):
@@ -44,11 +66,11 @@ def test_optimize_twice_works(fragment_factory):
     assert c.test.get() == 0.5
     c.fix_state(force=True)
     assert c.test.get() == 1
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
 
     c.fix_state(force=True)
     assert c.test.get() == 1
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
 
 
 @pytest.mark.parametrize(
@@ -72,7 +94,7 @@ def test_strategies(fragment_factory, strategy, expected_result):
     c = fragment_factory(OptimizingCalibration)
     assert c.test.get() == 0.5
     c.fix_state(force=True)
-    assert c.check_state() == CalibrationResult.OK
+    assert c.check_state()[0] == CalibrationResult.OK
     assert c.test.get() == expected_result
 
 
@@ -87,7 +109,7 @@ def test_optimum_params_are_saved(fragment_factory, dataset_db):
     assert dataset_db.get(dataset_key) == 1.0
 
 
-def test_optimum_params_are_remembered(fragment_factory, dataset_db):
+def test_optimum_params_are_remembered(fragment_factory):
     c = fragment_factory(ParamsCalibration)
     assert c.test.get() == 0.5
     c.fix_state(force=True)
