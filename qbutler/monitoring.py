@@ -58,6 +58,7 @@ def make_monitor_controller(
     monitors: Dict[str, Type[Calibration]],
     data_logger: Callable[[Calibration, str, CalibrationResult, Any], None] = None,
     devices: List[str] = [],
+    pipeline: str = "monitors",
 ):
     """
     Make an EnvExperiment that manages a list of Calibrations and regularly logs
@@ -106,12 +107,17 @@ def make_monitor_controller(
 
         devices (list):
             A list of devices to request from `device_db` in the MonitorMaster.
+
+        pipeline (str):
+            Default pipeline for the monitors to run in
     """
 
     class MonitorController(ExpFragment):
         def build_fragment(self):
             self.setattr_device("scheduler")
             self.scheduler: Scheduler
+
+            self.set_default_scheduling(pipeline_name=pipeline)
 
             self._monitors: Dict[str, Calibration] = {}
             self._monitor_tasks: Dict[str, asyncio.Task] = {}
