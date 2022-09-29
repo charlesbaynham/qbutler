@@ -4,7 +4,7 @@ from qbutler import dag
 from qbutler.dag import _get_graph
 from qbutler.dag import add_to_dependency_map
 from qbutler.dag import get_dependencies
-from qbutler.dag import get_graph_containing_calibration
+from qbutler.dag import _get_graph_containing_calibration
 
 
 class DummyCal:
@@ -75,8 +75,8 @@ def test_dag_separated(plot_graph):
     assert len(G) == 7
     assert G.number_of_edges() == 5
 
-    G_first = get_graph_containing_calibration(b1)
-    G_second = get_graph_containing_calibration(a2)
+    G_first = _get_graph_containing_calibration(b1)
+    G_second = _get_graph_containing_calibration(a2)
 
     assert len(G_first) == 4
     assert G_first.number_of_edges() == 3
@@ -191,8 +191,9 @@ def test_get_type_from_cache():
     c = DummyCal("hello")
     dag.add_to_dependency_map(c, None)
 
-    assert dag.get_calibration_from_type(DummyCal) == c
-    assert dag.get_calibration_from_type(DummyCal).id == "hello"
+    assert dag.get_calibrations_of_type(DummyCal)[0] == c
+    assert dag.get_calibrations_of_type(DummyCal)[0].id == "hello"
+    assert len(dag.get_calibrations_of_type(DummyCal)) == 1
 
 
 def test_get_calibrataion_from_cache(fragment_factory):
@@ -205,4 +206,25 @@ def test_get_calibrataion_from_cache(fragment_factory):
     c = fragment_factory(RealCal)
     dag.add_to_dependency_map(c, None)
 
-    assert dag.get_calibration_from_type(RealCal) == c
+    assert dag.get_calibrations_of_type(RealCal)[0] == c
+    assert len(dag.get_calibrations_of_type(RealCal)) == 1
+
+
+def test_get_calibrataions_from_cache(fragment_factory):
+    from qbutler.calibration import Calibration
+
+    class RealCal(Calibration):
+        def build_calibration(self):
+            pass
+
+    c1 = fragment_factory(RealCal)
+    dag.add_to_dependency_map(c1, None)
+
+    c2 = fragment_factory(RealCal)
+    dag.add_to_dependency_map(c2, None)
+
+    cals = dag.get_calibrations_of_type(RealCal)
+
+    assert len(cals) == 2
+    assert c1 in cals
+    assert c2 in cals

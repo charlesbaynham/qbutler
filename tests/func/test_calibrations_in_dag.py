@@ -1,11 +1,12 @@
 from weakref import ref
 
-import matplotlib.pyplot as plt
-import networkx as nx
+
 import pytest
 
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
+
+import qbutler.dag
 
 
 @pytest.fixture
@@ -76,17 +77,7 @@ def complex_network(fragment_factory):
         def fix_own_state(self) -> None:
             pass
 
-    class Dep3A(Calibration):
-        def build_calibration(self):
-            self.add_dependency(Dep2A)
-
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
-
-        def fix_own_state(self) -> None:
-            pass
-
-    class Dep3B(Calibration):
+    class Dep3(Calibration):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
@@ -98,8 +89,8 @@ def complex_network(fragment_factory):
 
     class Dep4A(Calibration):
         def build_calibration(self):
-            self.add_dependency(Dep3A)
-            self.add_dependency(Dep3B)
+            self.add_dependency(Dep3, name="Dep3A", create_duplicates=True)
+            self.add_dependency(Dep3, name="Dep3B", create_duplicates=True)
 
         def run_once(self) -> None:
             self.status.push(CalibrationResult.OK)
@@ -119,7 +110,7 @@ def test_simple_network_build(simple_network: Calibration, plot_graph):
 
 
 def test_simple_network_size(simple_network: Calibration):
-    dag = simple_network._get_dag()
+    dag = qbutler.dag._get_graph_containing_calibration(simple_network)
 
     assert len(dag) == 3
 
@@ -129,7 +120,7 @@ def test_simple_network_deps(simple_network: Calibration):
 
 
 def test_complex_network_size(complex_network: Calibration):
-    dag = complex_network._get_dag()
+    dag = qbutler.dag._get_graph_containing_calibration(complex_network)
 
     assert len(dag) == 6
 

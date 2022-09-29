@@ -151,7 +151,7 @@ class Calibration(ExpFragment):
         self.data: OpaqueChannel
 
         self.__in_build_calibration = True
-        self.build_calibration()
+        self.build_calibration(*args, **kwargs)
         self.__in_build_calibration = False
 
         # Add a parameter controlling whether this calibration's data is
@@ -261,7 +261,10 @@ class Calibration(ExpFragment):
         self.__optimization_type = optimization_type
 
     def add_dependency(
-        self, dep_calibration_class: Type["Calibration"], name: str = None
+        self,
+        dep_calibration_class: Type["Calibration"],
+        name: str = None,
+        create_duplicates=False,
     ) -> None:
         """
         Add a dependency of this Calibration
@@ -274,8 +277,23 @@ class Calibration(ExpFragment):
         Note that this method should be passed the dependency's *class*, not an
         instantiated object.
 
+        If the dep_calibration_class Calibration has already been created, the
+        existing instance will be added as a dependency instead of a new one.
+        This prevents the creation of multiple Calibrations all checking the
+        same thing. If you'd like to force the creation of a duplicate, use
+        `create_duplicates`.
+
         Args:
-            dep_calibration (Type["Calibration"]): The Calibration class to add as a dependency
+            dep_calibration_class (Type["Calibration"]):
+                The Calibration class to add as a dependency
+
+            name (str):
+                The name to use for this calibration. Default to the name of the
+                class.
+
+            create_duplicates (bool):
+                If True, create new objects even if a Calibration of this type
+                already exists.
         """
         if not self.__in_build_calibration:
             raise TypeError("This method must only be called in build_calibration()")
@@ -283,19 +301,25 @@ class Calibration(ExpFragment):
         if name is None:
             name = dep_calibration_class.__name__
 
-        cal_from_cache = dag.get_calibration_from_type(dep_calibration_class)
+        cals_from_cache = dag.get_calibrations_of_type(dep_calibration_class)
 
-        if cal_from_cache is not None:
-            # If this Calibration has been already created elsewhere, don't make a
-            # new copy. Instead, add the existing version as an attribute
-            setattr(self, name, cal_from_cache)
-        else:
-            # Otherwise, initialize it as a new subfragment and add it to our
-            # DAG machinery
-            self.setattr_fragment(name, dep_calibration_class)
+        if create_duplicates or not cals_from_cache:
+            # If the Calibration does not already exist, initialize it as a new
+            # subfragment and add it to our DAG machinery
+            self.setattr_calibration(dep_calibration_class, name=name)
 
             dep_calibration_object = getattr(self, name)
             dag.add_to_dependency_map(self, dep_calibration_object)
+        else:
+            # If this Calibration has been already created elsewhere, don't make a
+            # new copy. Instead, add the first existing version as an attribute
+            if len(cals_from_cache) > 1:
+                logger.warning(
+                    "Multiple instances of %s exist - using the first one (%s)",
+                    dep_calibration_class,
+                    cals_from_cache[0],
+                )
+            setattr(self, name, cals_from_cache[0])
 
     def _get_dependencies(self):
         return dag.get_dependencies(self)
@@ -603,6 +627,3 @@ class Calibration(ExpFragment):
 
         self.reset_param(p_handle.name)
         self.recompute_param_defaults()
-
-    def _get_dag(self):
-        return dag.get_graph_containing_calibration(self)
