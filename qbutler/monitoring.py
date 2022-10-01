@@ -52,6 +52,8 @@ from qbutler.calibration import CalibrationResult
 
 logger = logging.getLogger(__name__)
 
+RETRY_TIMEOUT = 300
+
 
 def make_monitor_controller(
     name: str,
@@ -165,6 +167,9 @@ def make_monitor_controller(
                         if monitor_task.exception():
                             try:
                                 monitor_task.result()
+                                logger.error(
+                                    "Monitor %s exited with no error", monitor_name
+                                )
                             except Exception:
                                 logger.error(
                                     "Monitor %s failed with exception",
@@ -172,7 +177,9 @@ def make_monitor_controller(
                                     exc_info=True,
                                 )
 
-                        self._monitor_tasks.pop(monitor_name)
+                        self._monitor_tasks[monitor_name] = asyncio.create_task(
+                            self.recover_a_monitor(monitor_name)
+                        )
 
                 if not self._monitor_tasks:
                     logger.error("All monitor tasks have ended")
@@ -180,6 +187,24 @@ def make_monitor_controller(
                     return
 
                 await asyncio.sleep(0.5)
+
+        async def recover_a_monitor(self, monitor_name):
+            """
+            A monitor has failed: try to recover it
+            """
+
+            logger.warning(
+                "Monitor %s has failed - waiting %s seconds before recovery",
+                monitor_name,
+                RETRY_TIMEOUT,
+            )
+            await asyncio.sleep(RETRY_TIMEOUT)
+
+            logger.warning("Attempting recover of monitor %s", monitor_name)
+
+            self._monitor_tasks[monitor_name] = asyncio.create_task(
+                self.run_monitor(name, monitor)
+            )
 
         async def wait_for_termination(self):
             while True:
