@@ -493,9 +493,10 @@ class Calibration(ExpFragment):
         self.__most_recent_check_timestamp = time()
 
         logger.debug(
-            "Checked own state of %s: result %s at time %s",
+            "Checked own state of %s: result %s/%s at time %s",
             self.__class__.__name__,
             self.__most_recent_check_result,
+            self.__most_recent_check_data,
             self.__most_recent_check_timestamp,
         )
 
@@ -583,6 +584,12 @@ class Calibration(ExpFragment):
         p_min, p_max, p_handle = self.__optimizable_params[0]
         p_handle: FloatParamHandle
 
+        logger.debug(
+            "Using default fix_own_state implementation to optimize '%s', previous value %s",
+            p_handle.name,
+            p_handle.get(),
+        )
+
         points = np.linspace(p_min, p_max, NUM_SCAN_POINT).tolist()
 
         # Override the parameter we're scanning to a new ParamStore
@@ -597,6 +604,13 @@ class Calibration(ExpFragment):
             results = run_fragment_once(self)
             output_status.append(results[self.status])
             output_data.append(results[self.data])
+
+            logger.debug(
+                "for %s = %s, measured data = %s",
+                p_handle.name,
+                point,
+                results[self.data],
+            )
 
             try:
                 float(results[self.data])
@@ -613,13 +627,20 @@ class Calibration(ExpFragment):
 
         # Set the best param
         k_max = np.argmax(output_data)
-        best_val = output_data[k_max]
+        best_param_val = points[k_max]
 
         self.set_dataset(
             self._param_dataset_key_from_name(p_handle.name),
-            best_val,
+            best_param_val,
             broadcast=True,
             persist=True,
+        )
+
+        logger.debug(
+            "Choosing %s=%s and saving in %s",
+            p_handle.name,
+            best_param_val,
+            self._param_dataset_key_from_name(p_handle.name),
         )
 
         if output_status[k_max] != CalibrationResult.OK:

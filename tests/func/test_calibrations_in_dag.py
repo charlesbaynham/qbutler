@@ -1,12 +1,10 @@
 from weakref import ref
 
-
 import pytest
 
+import qbutler.dag
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
-
-import qbutler.dag
 
 
 @pytest.fixture
