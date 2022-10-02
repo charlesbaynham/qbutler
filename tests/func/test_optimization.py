@@ -10,7 +10,7 @@ class ParamsCalibration(Calibration):
 
     def run_once(self) -> None:
         self.status.push(CalibrationResult.OK)
-        self.data.push(self.test.get())
+        self.data.push(10 * self.test.get())
 
 
 def test_can_make_params_calibration(fragment_factory):

@@ -2,9 +2,9 @@ from weakref import ref
 
 from qbutler import dag
 from qbutler.dag import _get_graph
+from qbutler.dag import _get_graph_containing_calibration
 from qbutler.dag import add_to_dependency_map
 from qbutler.dag import get_dependencies
-from qbutler.dag import _get_graph_containing_calibration
 
 
 class DummyCal:
