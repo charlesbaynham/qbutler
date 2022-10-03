@@ -200,10 +200,10 @@ def make_monitor_controller(
             )
             await asyncio.sleep(RETRY_TIMEOUT)
 
-            logger.warning("Attempting recover of monitor %s", monitor_name)
+            logger.warning("Attempting recovery of monitor %s", monitor_name)
 
             self._monitor_tasks[monitor_name] = asyncio.create_task(
-                self.run_monitor(name, monitor)
+                self.run_monitor(name, self._monitors[monitor_name])
             )
 
         async def wait_for_termination(self):
