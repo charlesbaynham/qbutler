@@ -19,28 +19,34 @@ Stretch goals
 Design plan
 -----------
 
-- [x]   `run_once` samples the Calibration once. It returns a value and a conclusion to two `ResultsChannel`s
+- [x]   `run_once` samples the Calibration once. It returns a value and a
+        conclusion to two `ResultsChannel`s
 - [x]   `check_own_state` runs `run_once` once and reads the results
-- [x]   `calibrate` would (by default) run `run_once` in a ndscan style scan, then draw some conclusion from it
-- [x]   Monitors differ from normal Calibrations only in that they have no optimizable parameters (and therefore can't be calibrated)
+- [x]   `calibrate` would (by default) run `run_once` in a ndscan style
+        scan, then draw some conclusion from it
+- [x]   Monitors differ from normal Calibrations only in that they have
+        no optimizable parameters (and therefore can't be calibrated)
 
 MonitorMaster
 -------------
 
 - [x]   Contains database logging code
 
-- [x]   Calls check_state at an appropriate set of times, then logs the results
+- [x]   Calls check_state at an appropriate set of times, then
+        logs the results
 
-- [x]   Uses async to do these things. I.e. the Monitors are not dependencies of some master Calibration, they're just a collection of independent Calibrations.
+- [x]   Uses async to do these things. I.e. the Monitors are not
+        dependencies of some master Calibration, they're just a collection of independent Calibrations.
 
-- [x]   Despite using async, launch each monitor in its own thread so that users can ignore the complexities of asyncronous coding
+- [x]   Despite using async, launch each monitor in its own thread
+        so that users can ignore the complexities of asyncronous coding
 """
 import asyncio
 import logging
 from typing import Any
 from typing import Callable
 from typing import Dict
-from typing import List
+from typing import Iterable
 from typing import Type
 
 from artiq.master.scheduler import Scheduler
@@ -57,7 +63,7 @@ def make_monitor_controller(
     name: str,
     monitors: Dict[str, Type[Calibration]],
     data_logger: Callable[[Calibration, str, CalibrationResult, Any], None] = None,
-    devices: List[str] = [],
+    devices: Iterable[str] = (),
     pipeline: str = "monitors",
 ):
     """
@@ -202,7 +208,7 @@ def make_monitor_controller(
             logger.warning("Attempting recovery of monitor %s", monitor_name)
 
             self._monitor_tasks[monitor_name] = asyncio.create_task(
-                self.run_monitor(name, monitor)
+                self.run_monitor(monitor_name, monitor)
             )
 
         async def wait_for_termination(self):
