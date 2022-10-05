@@ -33,7 +33,7 @@ MonitorMaster
 
 - [x]   Uses async to do these things. I.e. the Monitors are not dependencies of some master Calibration, they're just a collection of independent Calibrations.
 
-- [ ]   Despite using async, launch each monitor in its own thread so that users can ignore the complexities of asyncronous coding
+- [x]   Despite using async, launch each monitor in its own thread so that users can ignore the complexities of asyncronous coding
 """
 import asyncio
 import logging
@@ -51,8 +51,6 @@ from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 
 logger = logging.getLogger(__name__)
-
-RETRY_TIMEOUT = 300
 
 
 def make_monitor_controller(
@@ -192,18 +190,19 @@ def make_monitor_controller(
             """
             A monitor has failed: try to recover it
             """
+            monitor: Calibration = self._monitors[monitor_name]
 
             logger.warning(
                 "Monitor %s has failed - waiting %s seconds before recovery",
                 monitor_name,
-                RETRY_TIMEOUT,
+                monitor.get_timeout(),
             )
-            await asyncio.sleep(RETRY_TIMEOUT)
+            await asyncio.sleep(monitor.get_timeout())
 
             logger.warning("Attempting recovery of monitor %s", monitor_name)
 
             self._monitor_tasks[monitor_name] = asyncio.create_task(
-                self.run_monitor(name, self._monitors[monitor_name])
+                self.run_monitor(name, monitor)
             )
 
         async def wait_for_termination(self):
