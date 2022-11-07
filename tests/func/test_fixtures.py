@@ -23,3 +23,11 @@ def test_full_experiment_runner(build_and_run_experiment):
     from hello_experiment import HelloExperiment
 
     build_and_run_experiment(HelloExperiment)
+
+
+def test_full_experiment_runner_fragment(build_and_run_experiment):
+    import hello_experiment
+
+    build_and_run_experiment(
+        hello_experiment.HelloFragmentExperiment, hello_experiment.__file__
+    )

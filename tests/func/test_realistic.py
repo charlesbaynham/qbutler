@@ -10,6 +10,8 @@ import numpy as np
 from artiq.experiment import MHz
 from artiq.experiment import us
 from ndscan.experiment import *
+from ndscan.experiment.entry_point import create_and_run_fragment_once
+from ndscan.experiment.entry_point import make_fragment_scan_exp
 from oitg.errorbars import binom_onesided
 
 from qbutler.calibration import Calibration
@@ -131,3 +133,11 @@ def test_fix_bad_rabi_flob_calibration(fragment_factory):
 
     state, data = c.check_state()
     assert state == CalibrationResult.OK
+
+
+RabiFlopSimScanner = make_fragment_scan_exp(RabiFlopSim)
+RabiFlopSimScanner.__name__ = "RabiFlopSimScanner"
+
+
+def test_run_rabi_flop_as_scan(build_and_run_experiment):
+    build_and_run_experiment(RabiFlopSimScanner, experiment_file=__file__)
