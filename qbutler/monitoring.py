@@ -49,6 +49,7 @@ from typing import Dict
 from typing import Iterable
 from typing import Type
 
+from artiq.experiment import BooleanValue
 from artiq.master.scheduler import Scheduler
 from ndscan.experiment import ExpFragment
 from ndscan.experiment.entry_point import make_fragment_scan_exp
@@ -130,15 +131,19 @@ def make_monitor_controller(
             self._stop_now = False
 
             for monitor_name, monitor_type in monitors.items():
-                self.setattr_calibration(monitor_type, name=monitor_name)
+                enable_key = f"enable_{monitor_name}"
+                self.setattr_argument(enable_key, BooleanValue(default=True))
 
-                monitor = getattr(self, monitor_name)
-                self._monitors[monitor_name] = monitor
+                if getattr(self, enable_key):
+                    self.setattr_calibration(monitor_type, name=monitor_name)
 
-                if monitor.get_timeout() == 0:
-                    raise ValueError(
-                        f"Monitor {monitor} has timeout == 0 - this won't work!"
-                    )
+                    monitor = getattr(self, monitor_name)
+                    self._monitors[monitor_name] = monitor
+
+                    if monitor.get_timeout() == 0:
+                        raise ValueError(
+                            f"Monitor {monitor} has timeout == 0 - this won't work!"
+                        )
 
             for device_key in devices:
                 self.setattr_device(device_key)
