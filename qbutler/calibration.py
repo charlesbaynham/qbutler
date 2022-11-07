@@ -55,7 +55,7 @@ class Calibration(ExpFragment):
     3. It can depend on other Calibrations (add them using
        :meth:`Calibration.add_dependency` in :meth:`.build_calibration`)
     4. It can be repaired / optimized by running :meth:`Calibration.fix_state`
-    5. It is also a valid ndscan :class:`~ndscan.experiment.fragment.Fragment`,
+    5. It is also a valid ndscan :class:`~ndscan.experiment.fragment.ExpFragment`,
        and so can be scanned using the usual ndscan interface
 
     To write a new Calibration object, you must implement the :meth:`run_once`
