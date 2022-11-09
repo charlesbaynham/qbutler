@@ -1,3 +1,4 @@
+import pytest
 from artiq.experiment import EnvExperiment
 
 from qbutler.calibration import Calibration
@@ -31,3 +32,25 @@ def test_full_experiment_runner_fragment(build_and_run_experiment):
     build_and_run_experiment(
         hello_experiment.HelloFragmentExperiment, hello_experiment.__file__
     )
+
+
+@pytest.mark.slow
+def test_build_and_run_full_stack(build_and_run_full_stack):
+    import hello_experiment
+
+    print(build_and_run_full_stack("HelloExperiment", hello_experiment.__file__))
+
+
+@pytest.mark.slow
+def test_build_and_run_full_stack_error(build_and_run_full_stack):
+    import hello_experiment
+
+    with pytest.raises(RuntimeError):
+        build_and_run_full_stack("ErrorExperiment", hello_experiment.__file__)
+
+
+@pytest.mark.slow
+def test_build_and_run_full_stack_importer(build_and_run_full_stack):
+    import hello_experiment
+
+    print(build_and_run_full_stack("ImporterExperiment", hello_experiment.__file__))

@@ -1,10 +1,13 @@
 import copy
 import inspect
 import logging
+from pathlib import Path
+from time import sleep
 from typing import Callable
 from typing import Type
 from unittest.mock import Mock
 
+import pytest
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
 from artiq.language.environment import ProcessArgumentManager
@@ -220,3 +223,99 @@ def build_and_run_experiment(build_experiment):
         exp_inst.analyze()
 
     return build_and_run
+
+
+@fixture
+def free_port():
+    import socket
+    from contextlib import closing
+
+    def find_free_port():
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+            s.bind(("", 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            return s.getsockname()[1]
+
+    return find_free_port()
+
+
+@fixture
+def build_and_run_full_stack(artiq_master):
+    import subprocess as sp
+    import time
+
+    def run_experiement(class_name, file_name):
+        p_artiq_client = sp.run(
+            ["artiq_client", "submit", "-c", class_name, file_name],
+            stderr=sp.STDOUT,
+            stdout=sp.PIPE,
+            timeout=1,
+        )
+
+        # Wait two seconds then kill the master and read its output
+        time.sleep(2)
+
+        artiq_master.kill()
+        _, out = artiq_master.communicate(timeout=1)
+
+        out = out.decode()
+
+        if "ERROR" in out:
+            print(out)
+            raise RuntimeError('"ERROR" detected in artiq_master output')
+
+        return out
+
+    return run_experiement
+
+
+@fixture
+def artiq_master(tmp_path: Path):
+    """
+    The deluxe version - make a new ARTIQ stack, launch it, submit this
+    experiment to artiq_master using artiq_client and record the results
+    """
+
+    import subprocess as sp
+    import os
+
+    print(tmp_path)
+
+    (tmp_path / "device_db.py").write_text(
+        """
+device_db={
+    "core": {
+        "type": "local",
+        "module": "artiq.coredevice.core",
+        "class": "Core",
+        "arguments": {
+            "host": "123.123.123.123",
+            "ref_period": 1e-09,
+            "target": "rv32g",
+        },
+    },
+}
+        """
+    )
+
+    (tmp_path / "repository").mkdir()
+
+    new_env = os.environ.copy()
+    new_env["PYTHONPATH"] = (new_env.get("PYTHONPATH", "") + ";" + os.getcwd()).strip(
+        ";"
+    )
+
+    p_artiq_master = sp.Popen(
+        ["artiq_master", "-vv"],
+        stderr=sp.PIPE,
+        stdout=sp.PIPE,
+        cwd=tmp_path,
+        env=new_env,
+    )
+
+    yield p_artiq_master
+
+    p_artiq_master.kill()
+    _, out = p_artiq_master.communicate()
+
+    print(out)
