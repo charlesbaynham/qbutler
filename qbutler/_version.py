@@ -47,6 +47,7 @@ def get_version() -> str:
 
         except AssertionError:
             return semver
-    except FileNotFoundError:
-        # Git is not installed
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # Git is not installed or this directory wasn't copied as a git repo for some reason
+        # Fall back to the baked-in semver
         return semver

@@ -1,4 +1,6 @@
 from artiq.experiment import EnvExperiment
+from ndscan.experiment import ExpFragment
+from ndscan.experiment.entry_point import make_fragment_scan_exp
 
 
 class HelloExperiment(EnvExperiment):
@@ -9,7 +11,20 @@ class HelloExperiment(EnvExperiment):
         print("Hello!")
 
 
-from ndscan.experiment import ExpFragment
+class ErrorExperiment(EnvExperiment):
+    def build(self):
+        pass
+
+    def run(self):
+        raise ValueError
+
+
+class ImporterExperiment(EnvExperiment):
+    def build(self):
+        pass
+
+    def run(self):
+        import qbutler
 
 
 class HelloFragment(ExpFragment):
@@ -19,8 +34,6 @@ class HelloFragment(ExpFragment):
     def run_once(self):
         print("Hello!")
 
-
-from ndscan.experiment.entry_point import make_fragment_scan_exp
 
 HelloFragmentExperiment = make_fragment_scan_exp(HelloFragment)
 # Rename, otherwise ARTIQ will try to import the Fragment because ndscan copies its name

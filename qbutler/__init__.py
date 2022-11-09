@@ -15,3 +15,11 @@ try:
     del entrypoints
 except ImportError:
     pass
+
+# Patch CalibrationResult encoding into sipyco
+try:
+    from . import patch_sipyco
+
+    del patch_sipyco
+except ImportError:
+    pass

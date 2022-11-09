@@ -7,6 +7,7 @@ import time
 from typing import Tuple
 
 import numpy as np
+import pytest
 from artiq.experiment import MHz
 from artiq.experiment import us
 from ndscan.experiment import *
@@ -105,10 +106,6 @@ class RabiFlopSim(Calibration):
         ]
 
 
-# TODO: Restore this and test it
-# RabiFlopSimExp = make_fragment_scan_exp(RabiFlopSim)
-
-
 def test_build_rabi_flob_calibration(fragment_factory):
     fragment_factory(RabiFlopSim)
 
@@ -141,3 +138,8 @@ RabiFlopSimScanner.__name__ = "RabiFlopSimScanner"
 
 def test_run_rabi_flop_as_scan(build_and_run_experiment):
     build_and_run_experiment(RabiFlopSimScanner, experiment_file=__file__)
+
+
+@pytest.mark.slow
+def test_run_rabi_flop_as_scan_full_stack(build_and_run_full_stack):
+    build_and_run_full_stack("RabiFlopSimScanner", __file__)
