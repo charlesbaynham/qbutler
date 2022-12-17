@@ -1,13 +1,12 @@
 import copy
 import inspect
 import logging
+import textwrap
 from pathlib import Path
-from time import sleep
 from typing import Callable
 from typing import Type
 from unittest.mock import Mock
 
-import pytest
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
 from artiq.language.environment import ProcessArgumentManager
@@ -244,7 +243,7 @@ def build_and_run_full_stack(artiq_master):
     import subprocess as sp
     import time
 
-    def run_experiement(class_name, file_name):
+    def run_experiment(class_name, file_name):
         p_artiq_client = sp.run(
             ["artiq_client", "submit", "-c", class_name, file_name],
             stderr=sp.STDOUT,
@@ -266,7 +265,7 @@ def build_and_run_full_stack(artiq_master):
 
         return out
 
-    return run_experiement
+    return run_experiment
 
 
 @fixture
@@ -282,35 +281,29 @@ def artiq_master(tmp_path: Path):
     print(tmp_path)
 
     (tmp_path / "device_db.py").write_text(
+        textwrap.dedent(
+            """
+        device_db = {
+            "core": {
+                "type": "local",
+                "module": "artiq.coredevice.core",
+                "class": "Core",
+                "arguments": {"host": "1.2.3.4", "ref_period": 1e-09, "target": "rv32g"},
+            },
+        }
         """
-device_db={
-    "core": {
-        "type": "local",
-        "module": "artiq.coredevice.core",
-        "class": "Core",
-        "arguments": {
-            "host": "123.123.123.123",
-            "ref_period": 1e-09,
-            "target": "rv32g",
-        },
-    },
-}
-        """
+        )
     )
-
     (tmp_path / "repository").mkdir()
 
-    new_env = os.environ.copy()
-    new_env["PYTHONPATH"] = (new_env.get("PYTHONPATH", "") + ";" + os.getcwd()).strip(
-        ";"
-    )
+    env = os.environ.copy()
+    if "PYTHONPATH" in env:
+        env["PYTHONPATH"] += f":{os.getcwd()}"
+    else:
+        env["PYTHONPATH"] = f"{os.getcwd()}"
 
     p_artiq_master = sp.Popen(
-        ["artiq_master", "-vv"],
-        stderr=sp.PIPE,
-        stdout=sp.PIPE,
-        cwd=tmp_path,
-        env=new_env,
+        ["artiq_master", "-vv"], stderr=sp.PIPE, stdout=sp.PIPE, cwd=tmp_path, env=env
     )
 
     yield p_artiq_master

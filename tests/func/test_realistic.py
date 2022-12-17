@@ -11,7 +11,6 @@ import pytest
 from artiq.experiment import MHz
 from artiq.experiment import us
 from ndscan.experiment import *
-from ndscan.experiment.entry_point import create_and_run_fragment_once
 from ndscan.experiment.entry_point import make_fragment_scan_exp
 from oitg.errorbars import binom_onesided
 
