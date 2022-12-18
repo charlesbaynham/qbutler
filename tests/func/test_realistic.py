@@ -123,6 +123,8 @@ def test_fix_bad_rabi_flob_calibration(fragment_factory):
     c = fragment_factory(RabiFlopSim)
 
     state, data = c.check_state()
+    print(state)
+    print(data)
     assert state == CalibrationResult.BAD_DATA
 
     c.fix_state()

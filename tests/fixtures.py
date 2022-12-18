@@ -1,12 +1,14 @@
 import copy
 import inspect
 import logging
+import random as rand
 import textwrap
 from pathlib import Path
 from typing import Callable
 from typing import Type
 from unittest.mock import Mock
 
+import numpy
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
 from artiq.language.environment import ProcessArgumentManager
@@ -312,3 +314,9 @@ def artiq_master(tmp_path: Path):
     _, out = p_artiq_master.communicate()
 
     print(out)
+
+
+@fixture(autouse=True)
+def random():
+    rand.seed(0)
+    numpy.random.seed(0)
