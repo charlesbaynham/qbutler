@@ -31,11 +31,11 @@
     flake-utils.url = "github:numtide/flake-utils";
     mach-nix.url = "mach-nix/3.4.0";
 
-    nixpkgs.follows = "mach-nix/nixpkgs";
+    nixpkgs.follows = "artiq/nixpkgs";
 
     artiq = {
       url = "git+https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git";
-      inputs.nixpkgs.follows = "nixpkgs";
+      # inputs.nixpkgs.follows = "nixpkgs";
     };
 
     # Oxford's ndscan ARTIQ extension + supporting package
@@ -148,7 +148,7 @@
       in
       rec {
         packages = rec {
-          inherit qbutler;
+          inherit qbutler buildDevReqs nonPyPIRequirements nonPyPIPackages nonPyPIPackagesByName;
 
           docs_html = pkgs.stdenv.mkDerivation {
             pname = "qbutler_docs_html";
