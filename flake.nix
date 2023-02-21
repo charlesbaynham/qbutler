@@ -69,7 +69,6 @@
         nonPyPIPackages = [
           patched_artiq
 
-          artiq.packages.${system}.llvmlite-new
           artiq.packages.${system}.pythonparser
           artiq.packages.${system}.qasync
           artiq.inputs.sipyco.packages.${system}.sipyco
