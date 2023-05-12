@@ -1,5 +1,5 @@
 # Default image, if not specified
-image: "nixpkgs/cachix-flakes"
+image: "nixpkgs/nix-flakes"
 
 stages:
   - Static Analysis
@@ -17,6 +17,8 @@ stages:
     - echo [user] > ~/.gitconfig
     - echo name = Gitlabs CI Testing >> ~/.gitconfig
     - echo email = test@example.com >> ~/.gitconfig
+    # Install cachix
+    - nix profile install nixpkgs/nixos-22.11#cachix
     # If a Cachix cache was passed, use it
     - if [ ! -z '$CACHIX_CACHE_NAME' ]; then cachix use $CACHIX_CACHE_NAME; fi
 
