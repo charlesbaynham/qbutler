@@ -8,9 +8,8 @@ class ParamsCalibration(Calibration):
     def build_calibration(self):
         self.setattr_param_optimizable("test", "A test", 0, 1, default=0.5)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
-        self.data.push(10 * self.test.get())
+    def check_own_state(self):
+        return CalibrationResult.OK, 10 * self.test.get()
 
 
 def test_can_make_params_calibration(fragment_factory):
@@ -34,7 +33,7 @@ def test_cannot_optimize_without_params(fragment_factory):
         c.fix_state(force=True)
 
 
-def test_cannot_optimize_without_run_once(fragment_factory):
+def test_cannot_optimize_without_check_own_state(fragment_factory):
     class Cali(Calibration):
         def build_calibration(self):
             self.setattr_param_optimizable("test", "A test", 0, 1, default=0.5)
@@ -87,9 +86,8 @@ def test_strategies(fragment_factory, strategy, expected_result):
             self.setattr_param_optimizable("test", "A test", -1, 1, default=0.5)
             self.set_optimization_type(strategy)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
-            self.data.push(self.test.get())
+        def check_own_state(self):
+            return CalibrationResult.OK, self.test.get()
 
     c = fragment_factory(OptimizingCalibration)
     assert c.test.get() == 0.5

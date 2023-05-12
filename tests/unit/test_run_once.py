@@ -12,9 +12,8 @@ class CalibrationWithResults(Calibration):
     def build_calibration(self):
         pass
 
-    def run_once(self):
-        self.status.push(CalibrationResult.OK)
-        self.data.push(99.0)
+    def check_own_state(self):
+        return CalibrationResult.OK, 99.0
 
 
 def test_can_get_results_from_run_once(fragment_factory):

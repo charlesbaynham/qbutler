@@ -13,8 +13,8 @@ class MinimalCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_cannot_make_bare_calibration(fragment_factory):
@@ -68,8 +68,8 @@ class ParamsCalibration(Calibration):
     def build_calibration(self):
         self.setattr_param_optimizable("test", "A test", 0, 1, default=0.5)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_can_make_params_calibration(fragment_factory):

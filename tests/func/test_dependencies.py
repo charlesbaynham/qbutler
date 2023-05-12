@@ -6,16 +6,16 @@ class GoodCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 class BadCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.BAD_DATA)
+    def check_own_state(self):
+        return CalibrationResult.BAD_DATA, None
 
 
 def test_good_and_bad_calibrations_work_as_expected(fragment_factory):
@@ -30,16 +30,16 @@ class CalibrationWithGoodDependency(Calibration):
     def build_calibration(self):
         self.add_dependency(GoodCalibration)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 class CalibrationWithBadDependency(Calibration):
     def build_calibration(self):
         self.add_dependency(BadCalibration)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_inherit_good(fragment_factory):
@@ -59,16 +59,16 @@ class CalibrationWithRepeatedBadDependencies(Calibration):
         self.add_dependency(BadCalibration, "dep1")
         self.add_dependency(BadCalibration, "dep2")
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 class AlternativeBadCalibration(Calibration):
     def build_calibration(self):
         pass
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.BAD_DATA)
+    def check_own_state(self):
+        return CalibrationResult.BAD_DATA, None
 
 
 class CalibrationWithMultipleBadDependencies(Calibration):
@@ -76,8 +76,8 @@ class CalibrationWithMultipleBadDependencies(Calibration):
         self.add_dependency(BadCalibration)
         self.add_dependency(AlternativeBadCalibration)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_inherited_two_bad(fragment_factory):
@@ -91,8 +91,8 @@ class CalibrationWithOneBadOneGoodDep(Calibration):
         self.add_dependency(BadCalibration)
         self.add_dependency(GoodCalibration)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_inherited_one_bad_one_good(fragment_factory):

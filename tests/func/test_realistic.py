@@ -81,13 +81,10 @@ class RabiFlopSim(Calibration):
         time.sleep(0.01)
         return self.readout.simulate_shots(p)
 
-    def run_once(self):
+    def check_own_state(self):
         p, _ = self.do_rabi_flop()
 
-        self.data.push(p)
-        self.status.push(
-            CalibrationResult.OK if p > 0.75 else CalibrationResult.BAD_DATA
-        )
+        return (CalibrationResult.OK if p > 0.75 else CalibrationResult.BAD_DATA, p)
 
     def get_default_analyses(self):
         return [

@@ -13,8 +13,8 @@ def simple_network(fragment_factory):
         def build_calibration(self):
             pass
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -23,8 +23,8 @@ def simple_network(fragment_factory):
         def build_calibration(self):
             self.add_dependency(DepA)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -33,8 +33,8 @@ def simple_network(fragment_factory):
         def build_calibration(self):
             self.add_dependency(DepB)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -48,8 +48,8 @@ def complex_network(fragment_factory):
         def build_calibration(self):
             pass
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -58,8 +58,8 @@ def complex_network(fragment_factory):
         def build_calibration(self):
             pass
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -69,8 +69,8 @@ def complex_network(fragment_factory):
             self.add_dependency(Dep1A)
             self.add_dependency(Dep1B)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -79,8 +79,8 @@ def complex_network(fragment_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass
@@ -90,8 +90,8 @@ def complex_network(fragment_factory):
             self.add_dependency(Dep3, name="Dep3A", create_duplicates=True)
             self.add_dependency(Dep3, name="Dep3B", create_duplicates=True)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             pass

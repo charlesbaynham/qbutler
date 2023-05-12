@@ -8,8 +8,8 @@ class ImmediateTimeoutCalibration(Calibration):
     def build_calibration(self):
         self.set_timeout(0)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_immediate_timeout(fragment_factory):
@@ -24,8 +24,8 @@ class ShortTimeoutCalibration(Calibration):
     def build_calibration(self):
         self.set_timeout(0.1)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
 
 def test_short_timeout(fragment_factory):
