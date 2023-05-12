@@ -29,7 +29,7 @@
     # For packaging
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-21.11";
     flake-utils.url = "github:numtide/flake-utils";
-    mach-nix.url = "mach-nix/3.4.0";
+    mach-nix.url = "mach-nix/3.5.0";
 
     nixpkgs.follows = "artiq/nixpkgs";
 
@@ -148,7 +148,7 @@
       in
       rec {
         packages = rec {
-          inherit qbutler buildDevReqs nonPyPIRequirements nonPyPIPackages nonPyPIPackagesByName;
+          inherit qbutler patched_artiq buildDevReqs nonPyPIRequirements nonPyPIPackages nonPyPIPackagesByName;
 
           docs_html = pkgs.stdenv.mkDerivation {
             pname = "qbutler_docs_html";
