@@ -8,11 +8,11 @@ class OverriddenFixableCalibration(Calibration):
     def build_calibration(self):
         self.broken = True
 
-    def run_once(self) -> None:
+    def check_own_state(self) -> None:
         if self.broken:
-            self.status.push(CalibrationResult.BAD_DATA)
+            return CalibrationResult.BAD_DATA, None
         else:
-            self.status.push(CalibrationResult.OK)
+            return CalibrationResult.OK, None
 
     def fix_own_state(self) -> CalibrationResult:
         self.broken = False
@@ -32,8 +32,8 @@ class DependantCalibration(Calibration):
     def build_calibration(self):
         self.add_dependency(OverriddenFixableCalibration)
 
-    def run_once(self) -> None:
-        self.status.push(CalibrationResult.OK)
+    def check_own_state(self):
+        return CalibrationResult.OK, None
 
     def fix_own_state(self) -> None:
         pass
@@ -50,7 +50,6 @@ def test_can_fix_broken_child_calibration(fragment_factory):
 
 
 def test_correct_order_fixes(fragment_factory):
-
     log_calls = {}
 
     def log_a_call(k):
@@ -62,8 +61,8 @@ def test_correct_order_fixes(fragment_factory):
         def build_calibration(self):
             pass
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -72,8 +71,8 @@ def test_correct_order_fixes(fragment_factory):
         def build_calibration(self):
             pass
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -83,8 +82,8 @@ def test_correct_order_fixes(fragment_factory):
             self.add_dependency(Dep1A)
             self.add_dependency(Dep1B)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -93,8 +92,8 @@ def test_correct_order_fixes(fragment_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -103,8 +102,8 @@ def test_correct_order_fixes(fragment_factory):
         def build_calibration(self):
             self.add_dependency(Dep2A)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)
@@ -114,8 +113,8 @@ def test_correct_order_fixes(fragment_factory):
             self.add_dependency(Dep3A)
             self.add_dependency(Dep3B)
 
-        def run_once(self) -> None:
-            self.status.push(CalibrationResult.OK)
+        def check_own_state(self):
+            return CalibrationResult.OK, None
 
         def fix_own_state(self) -> None:
             log_a_call(self.__class__)

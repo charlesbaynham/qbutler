@@ -8,9 +8,7 @@ from typing import Type
 
 import numpy as np
 from ndscan.experiment import ExpFragment
-from ndscan.experiment import FloatChannel
 from ndscan.experiment import OpaqueChannel
-from ndscan.experiment import run_fragment_once
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import FloatParamHandle
 from ndscan.experiment.parameters import FloatParamStore
@@ -50,17 +48,18 @@ class Calibration(ExpFragment):
     features:
 
     1. Its status is either "OK" or "BAD"
-    2. Its status can be checked by running :meth:`run_once` (you must implement
-       this method)
+    2. Its status and that of its dependents can be checked by running
+       :meth:`check_state`.
     3. It can depend on other Calibrations (add them using
        :meth:`Calibration.add_dependency` in :meth:`.build_calibration`)
     4. It can be repaired / optimized by running :meth:`Calibration.fix_state`
-    5. It is also a valid ndscan :class:`~ndscan.experiment.fragment.ExpFragment`,
-       and so can be scanned using the usual ndscan interface
+    5. It is also a valid ndscan
+       :class:`~ndscan.experiment.fragment.ExpFragment`, and so can be scanned
+       using the usual ndscan interface
 
-    To write a new Calibration object, you must implement the :meth:`run_once`
-    method. If you need custom logic for checking state or calibrating, you can
-    also override :meth:`check_own_state` or :meth:`fix_own_state`. See the
+    To write a new Calibration object, you must implement the
+    :meth:`check_own_state` method. If you need custom logic for checking state
+    or calibrating, you can also override :meth:`fix_own_state`. See the
     documentation for each method for details of the interface.
 
     As a fully qualified :class:`~ndscan.experiment.fragment.Fragment`, you are
@@ -94,7 +93,7 @@ class Calibration(ExpFragment):
         """
         raise NotImplementedError
 
-    def run_once(self) -> None:
+    def check_own_state(self) -> Tuple[CalibrationResult, Any]:
         """
         Measure the status of this :class:`.Calibration`
 
@@ -111,7 +110,7 @@ class Calibration(ExpFragment):
         should also, optionally, output a value to the :class:`.ResultsChannel`
         "data" which could be used to optimize the :class:`.Calibration`.
         :meth:`fix_own_state` can handle basic algorithms for optimizing as long
-        as the "data" output is a float. If not, you can override it: see te
+        as the "data" output is a float. If not, you can override it: see the
         docs for :meth:`fix_own_state`.
 
         This method has access to the usual :mod:`ndscan` preparations such as
@@ -166,6 +165,16 @@ class Calibration(ExpFragment):
 
         # Register this Calibration as having been built
         dag.add_to_dependency_map(self, None)
+
+    def run_once(self) -> None:
+        """
+        Run the checks of this Calibration once and push the results into the
+        :any:.`ResultsChannel`s "data" and "status" so that Calibrations can
+        also be scanned as ExpFragments.
+        """
+        status, data = self._do_check_own_state()
+        self.status.push(status)
+        self.data.push(data)
 
     def _param_dataset_key_from_name(self, name: str) -> str:
         return self.__class__.__name__ + "." + name
@@ -240,7 +249,7 @@ class Calibration(ExpFragment):
         Configure how this Calibration is optimized
 
         Control how the default fix_state algorithm will optimize this
-        Calibration, based on the "data" result output from :meth:`.run_once`.
+        Calibration, based on the "data" result output from :meth:`.check_own_state`.
 
         Options are:
 
@@ -470,7 +479,7 @@ class Calibration(ExpFragment):
                 logger.debug(f"Attempting fix of {dep.__class__.__name__}")
 
                 dep.fix_own_state()
-                current_state, current_data = dep.check_own_state()
+                current_state, current_data = dep._do_check_own_state()
 
                 logger.debug(
                     "Result of fix of %s = %s", dep.__class__.__name__, current_state
@@ -526,43 +535,17 @@ class Calibration(ExpFragment):
 
         return self.__most_recent_check_result
 
-    def check_own_state(self) -> Tuple[CalibrationResult, Any]:
-        """
-        Check the state of this Calibration
-
-        This default implementation checks the state of this Calibration by
-        running the :meth:`~.run_once` method and collecting the results from
-        the two :class:`~ndscan.experiment.result_channels.ResultChannel`
-        channels: "data" and "status".
-
-        If you prefer, you can override this method to implement your own check
-        logic.
-
-        Returns:
-            CalibrationResult:  Result of the check
-        """
-        results = run_fragment_once(self)
-        status = results[self.status]
-        data = results[self.data]
-
-        if status is None:
-            raise NotImplementedError(
-                "run_once methods must push a CalibrationResult state to the 'status' OutputChannel"
-            )
-
-        return status, data
-
     def fix_own_state(self) -> None:
         """
         Attempt to fix this Calibration
 
         Attempt to optimize the output of this Calibration by calling
-        :meth:`.run_once` and inspecting the "data" :class:`.ResultsChannel`
+        :meth:`.check_own_state` and inspecting the "data" output
         while varying the optimizable parameters (see
         :meth:`.setattr_param_optimizable`). How this optimization occurs is an
         implementation detail.
 
-        By the end of the optimization, the output of :meth:`run_once` should be
+        By the end of the optimization, the output of :meth:`check_own_state` should be
         :any:`CalibrationResult.OK`.
 
         Override this method to implement your own algorithm to make this
@@ -572,6 +555,7 @@ class Calibration(ExpFragment):
             CalibrationError:
                 Raised if the algorithm fails to fix this Calibration.
         """
+
         if len(self.__optimizable_params) == 0:
             raise ValueError(
                 f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
@@ -601,23 +585,16 @@ class Calibration(ExpFragment):
 
         for point in points:
             p_store.set_value(point)
-            results = run_fragment_once(self)
-            output_status.append(results[self.status])
-            output_data.append(results[self.data])
+            state, data = self._do_check_own_state()
+            output_status.append(state)
+            output_data.append(data)
 
-            logger.debug(
-                "for %s = %s, measured data = %s",
-                p_handle.name,
-                point,
-                results[self.data],
-            )
+            logger.debug("for %s = %s, measured data = %s", p_handle.name, point, data)
 
             try:
-                float(results[self.data])
+                float(data)
             except ValueError:
-                raise ValueError(
-                    "Results %s could not be converted to a float", results[self.data]
-                )
+                raise ValueError("Results %s could not be converted to a float", data)
 
         strategy = self.optimization_type.get()
 
