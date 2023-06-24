@@ -66,6 +66,11 @@ class Calibration(ExpFragment):
     also entitled to implement the ndscan methods such as
     :meth:`~ndscan.experiment.fragment.Fragment.device_setup`,
     :meth:`~ndscan.experiment.fragment.Fragment.host_setup`, etc.
+
+    Do not implement :meth:`~ndscan.experiment.fragment.Fragment.run_once`! This
+    is implemented automatically so that Calibrations can be scanned over their
+    parameters as ndscan ExpFragments.
+
     """
 
     def __repr__(self) -> str:

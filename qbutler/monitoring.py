@@ -19,10 +19,8 @@ Stretch goals
 Design plan
 -----------
 
-- [x]   `run_once` samples the Calibration once. It returns a value and a
-        conclusion to two `ResultsChannel`s
-- [x]   `check_own_state` runs `run_once` once and reads the results
-- [x]   `calibrate` would (by default) run `run_once` in a ndscan style
+- [x]   `check_own_state` samples the Calibration once.
+- [x]   `calibrate` would (by default) run `check_own_state` in a ndscan style
         scan, then draw some conclusion from it
 - [x]   Monitors differ from normal Calibrations only in that they have
         no optimizable parameters (and therefore can't be calibrated)
@@ -76,9 +74,8 @@ def make_monitor_controller(
     logging their status to a user-defined destination.
 
     A valid Calibration for this controller is known as a Monitor. It is simply
-    a Calibration whose :meth:`run_once` method outputs a float to the "data"
-    :class:`ResultsChannel`. These :class:`Calibration` objects will not be
-    fixed, only monitored.
+    a Calibration whose :meth:`check_own_state` method returns a status and a
+    float. These :class:`Calibration` objects will not be fixed, only monitored.
 
     Monitors must have a timeout set that is not zero, otherwise an error will
     be thrown (see :meth:`.set_timeout`).
@@ -92,9 +89,8 @@ def make_monitor_controller(
             def build_calibration(self):
                 self.set_timeout(1.0)  # 1s timeout
 
-            def run_once(self):
-                self.status.push(CalibrationResult.OK)
-                self.data.push(123.0)
+            def check_own_state(self):
+                return CalibrationResult.OK, 123.0
 
         MyMonitorMaster = make_monitor_controller(
             "MyMonitorMaster", monitors={"simple": SimpleMonitor}
@@ -106,7 +102,8 @@ def make_monitor_controller(
             Name of the monitor master to be created
 
         monitors (dict):
-            A dict of names -> Monitor classes which will be constructed and monitored.
+            A dict of names -> Monitor classes which will be constructed and
+            monitored.
 
         data_logger (callable):
             A callback which should log the results of the checks somehow (e.g.
