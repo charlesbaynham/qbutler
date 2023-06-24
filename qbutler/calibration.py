@@ -110,13 +110,13 @@ class Calibration(ExpFragment):
         b)  *(optional)* measure a quantity that can be used to quantify this
             Calibration's status
 
-        This method must measure the state of the system somehow, then output a
-        :class:`.CalibrationResult` to the :class:`.ResultsChannel` "status". It
-        should also, optionally, output a value to the :class:`.ResultsChannel`
-        "data" which could be used to optimize the :class:`.Calibration`.
-        :meth:`fix_own_state` can handle basic algorithms for optimizing as long
-        as the "data" output is a float. If not, you can override it: see the
-        docs for :meth:`fix_own_state`.
+        This method must measure the state of the system somehow, then return a
+        "status" of type :class:`.CalibrationResult`. It must also output a
+        "data" value which could be used to optimize the :class:`.Calibration`.
+        This can be `None` if not desired. :meth:`fix_own_state` can handle
+        basic algorithms for optimizing as long as the "data" output is a float.
+        To handle other output formats, you can override :meth:`fix_own_state`:
+        see the docs for :meth:`fix_own_state`.
 
         This method has access to the usual :mod:`ndscan` preparations such as
         :meth:`~ndscan.experiment.fragment.Fragment.device_setup`,
