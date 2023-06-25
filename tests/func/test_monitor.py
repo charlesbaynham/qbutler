@@ -1,4 +1,5 @@
 from time import sleep
+from unittest.mock import Mock
 
 import pytest
 
@@ -40,8 +41,12 @@ def test_monitor_builds(build_experiment):
 # pytest-timeout to run it in a separate process and kill it if it overruns
 @pytest.mark.timeout(5, method="thread")
 @pytest.mark.slow
-def test_monitor_runs(build_experiment, mock_core):
+def test_monitor_runs(build_experiment, device_mgr):
     import concurrent.futures
+
+    # Replace the core with a Mock object
+    mock_core = Mock()
+    device_mgr.override_device("core", mock_core)
 
     RUN_FOR = 2
     WAIT_TIMEOUT = 4
@@ -85,8 +90,12 @@ def test_monitor_runs(build_experiment, mock_core):
 # pytest-timeout to run it in a separate process and kill it if it overruns
 @pytest.mark.timeout(5, method="thread")
 @pytest.mark.slow
-def test_monitor_logs_to_db(build_experiment, mock_core, mock_db_writer):
+def test_monitor_logs_to_db(build_experiment, device_mgr, mock_db_writer):
     import concurrent.futures
+
+    # Replace the core with a Mock object
+    mock_core = Mock()
+    device_mgr.override_device("core", mock_core)
 
     RUN_FOR = 2
     WAIT_TIMEOUT = 4

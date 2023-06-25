@@ -177,7 +177,14 @@ def device_mgr(mock_db_writer):
                 "CCB for service '%s' (args %s, kwargs %s)", service, args, kwargs
             )
 
-    return DeviceManager(
+    class DeviceManagerWithOverride(DeviceManager):
+        # Add an "override" method to DeviceManger which lets us replace a
+        # device with our own object
+        def override_device(self, key, obj):
+            self.close_devices()
+            self.virtual_devices[key] = obj
+
+    return DeviceManagerWithOverride(
         DummyDeviceDB(mock_device_db),
         virtual_devices={
             "scheduler": DummyScheduler(),
@@ -185,11 +192,6 @@ def device_mgr(mock_db_writer):
             "mock_db_writer": mock_db_writer,
         },
     )
-
-
-@fixture
-def mock_core(device_mgr):
-    return device_mgr.get("core")
 
 
 @fixture(scope="session", autouse=True)
