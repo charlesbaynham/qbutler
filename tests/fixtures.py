@@ -363,7 +363,7 @@ async def launch_artiq_master(tmp_path: Path) -> sp.Popen:
                 "type": "local",
                 "module": "artiq.coredevice.core",
                 "class": "Core",
-                "arguments": {"host": "1.2.3.4", "ref_period": 1e-09, "target": "rv32g"},
+                "arguments": {"host": None, "ref_period": 1e-09, "target": "rv32g"},
             },
         }
         """
