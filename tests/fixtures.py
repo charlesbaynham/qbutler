@@ -21,8 +21,12 @@ from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
 
+from tests.wait_for_port import wait_for_port
+
 
 logger = logging.getLogger(__name__)
+
+ARTIQ_MASTER_CHECK_PORT = 3251
 
 
 @fixture
@@ -280,7 +284,10 @@ def build_and_run_full_stack(artiq_master):
             stderr=sp.STDOUT,
             stdout=sp.PIPE,
             timeout=1,
+            check=True,
         )
+
+        logger.info("artiq_client output: %s", p_artiq_client.stdout.decode())
 
         # Wait two seconds then kill the master and read its output
         time.sleep(2)
@@ -337,12 +344,14 @@ def artiq_master(tmp_path: Path):
         ["artiq_master", "-vv"], stderr=sp.PIPE, stdout=sp.PIPE, cwd=tmp_path, env=env
     )
 
+    wait_for_port(ARTIQ_MASTER_CHECK_PORT, timeout=5)
+
     yield p_artiq_master
 
     p_artiq_master.kill()
     _, out = p_artiq_master.communicate()
 
-    print(out)
+    logger.info("artiq_master output: %s", out)
 
 
 @fixture(autouse=True)

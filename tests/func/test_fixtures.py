@@ -73,6 +73,13 @@ def test_build_and_run_full_stack_error(build_and_run_full_stack):
 
 
 @pytest.mark.slow
+def test_build_and_run_full_stack_kernel(build_and_run_full_stack):
+    import hello_experiment
+
+    print(build_and_run_full_stack("KernelExperiment", hello_experiment.__file__))
+
+
+@pytest.mark.slow
 def test_build_and_run_full_stack_importer(build_and_run_full_stack):
     import hello_experiment
 
