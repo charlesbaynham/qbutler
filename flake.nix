@@ -141,6 +141,10 @@
             }
           )
 
+          # These are needed by ARTIQ but not propegated because that's hard in Nix
+          pkgs.llvm_11
+          pkgs.lld_11
+
           # These packages are required for the pipeline:
           pkgs.git # needed for pre-commit
           pkgs.librsvg # needed for latex docs conversion of SVGs
