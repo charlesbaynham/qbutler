@@ -302,11 +302,16 @@ def build_and_run_full_stack(tmp_path):
             end_time = time.time() + timeout
             timed_out = False
             unexpected_close = False
+
+            print("artiq_master output:")
+
             while True:
                 try:
                     line = await asyncio.wait_for(
                         p_artiq_master.stdout.readline(), timeout=end_time - time.time()
                     )
+                    line = line.decode().strip()
+                    print(line)
                     output.append(line)
                 except asyncio.TimeoutError:
                     # Time is up! Kill the master process
@@ -319,15 +324,11 @@ def build_and_run_full_stack(tmp_path):
                     unexpected_close = True
                     break
 
-                if "deletion of RID 0 completed" in line.decode():
+                if "deletion of RID 0 completed" in line:
                     logger.info("Experiment completed")
                     break
 
-            print("artiq_master output:")
-            for l in output:
-                print(l.decode().strip())
-
-            if any("ERROR" in l.decode() for l in output):
+            if any("ERROR" in l for l in output):
                 raise RuntimeError('"ERROR" detected in artiq_master output')
             elif timed_out:
                 raise TimeoutError("Experiment timed out")
