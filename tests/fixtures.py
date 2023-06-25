@@ -187,6 +187,11 @@ def device_mgr(mock_db_writer):
     )
 
 
+@fixture
+def mock_core(device_mgr):
+    return device_mgr.get("core")
+
+
 @fixture(scope="session", autouse=True)
 def patch_artiq_install_hook():
     from artiq.compiler import import_cache
