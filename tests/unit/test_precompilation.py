@@ -1,4 +1,5 @@
 import pytest
+from artiq.coredevice.core import CompileError
 from artiq.experiment import EnvExperiment
 from artiq.experiment import kernel
 
@@ -37,5 +38,5 @@ def test_precompilation(build_and_run_experiment):
 
 
 def test_failing_precompilation(build_and_run_experiment):
-    with pytest.raises(Exception):
+    with pytest.raises(CompileError):
         build_and_run_experiment(FailingPrecompile)
