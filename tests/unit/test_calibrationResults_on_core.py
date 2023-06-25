@@ -12,6 +12,8 @@ class PrintCalibrationResult(EnvExperiment):
 
     @kernel
     def run(self):
+        # By using an interaction with the real world, I'm checking that the
+        # compiler isn't optimizing away my variables
         t = self.core.get_rtio_counter_mu()
 
         if t % 2 == 0:
@@ -31,7 +33,14 @@ class PrintCalibrationResult(EnvExperiment):
 
     @kernel
     def return_tuple(self):
-        return CalibrationResult.OK, 0.0
+        t = self.core.get_rtio_counter_mu()
+
+        if t % 2 == 0:
+            r = CalibrationResult.OK
+        else:
+            r = CalibrationResult.BAD_DATA
+
+        return r, 0.0
 
 
 def test_calibrationresult_on_core(build_and_run_experiment):
