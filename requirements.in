@@ -15,3 +15,9 @@
 
 # List packages here, e.g.:
 networkx
+
+# This is a hack to bring in llvmlite which is an ARTIQ dependency. This ought
+# to be detected from the ARTIQ source but I'm fed up of messing around with
+# mach-nix, especially since I'm going to have to dump it infavour of e.g.
+# poetry2nix because it's now unmaintained. So here's a hack instead :D
+llvmlite
