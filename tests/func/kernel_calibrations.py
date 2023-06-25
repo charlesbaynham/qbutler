@@ -17,11 +17,9 @@ class MinimalKernelCalibration(Calibration):
 
 
 class MinimalKernelCalibrationExperiment(ExpFragment):
-    def build_fragment(self, *args, **kwargs) -> None:
+    def build_fragment(self) -> None:
         self.setattr_calibration(MinimalKernelCalibration)
         self.MinimalKernelCalibration: MinimalKernelCalibration
-
-        return super().build_fragment(*args, **kwargs)
 
     def run(self):
         self.MinimalKernelCalibration.check_state()
