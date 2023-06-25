@@ -1,7 +1,10 @@
+import asyncio
 import copy
 import inspect
 import logging
+import os
 import random as rand
+import subprocess as sp
 import textwrap
 from pathlib import Path
 from typing import Callable
@@ -9,7 +12,6 @@ from typing import Type
 from unittest.mock import Mock
 
 import numpy
-from artiq.coredevice.core import CommKernelDummy
 from artiq.coredevice.core import Core
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
@@ -21,8 +23,8 @@ from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
 
+from tests.marker_exp import MarkerExperiment
 from tests.wait_for_port import wait_for_port
-
 
 logger = logging.getLogger(__name__)
 
@@ -274,48 +276,81 @@ def free_port():
 
 
 @fixture
-def build_and_run_full_stack(artiq_master):
+def build_and_run_full_stack(tmp_path):
     import subprocess as sp
     import time
 
-    def run_experiment(class_name, file_name):
-        p_artiq_client = sp.run(
-            ["artiq_client", "submit", "-c", class_name, file_name],
+    # Start up an asyncio stack to monitor the master with a timeout
+    async def async_run_experiment(class_name, file_name, timeout=5.0):
+        # Start an artiq_master
+        p_artiq_master = await artiq_master(tmp_path)
+
+        # Submit experiment with artiq_client
+        p_artiq_client_exp = sp.run(
+            ["artiq_client", "-vv", "submit", "-c", class_name, file_name],
             stderr=sp.STDOUT,
             stdout=sp.PIPE,
             timeout=1,
             check=True,
         )
 
-        logger.info("artiq_client output: %s", p_artiq_client.stdout.decode())
+        logger.info("artiq_client output: %s", p_artiq_client_exp.stdout.decode())
 
-        # Wait two seconds then kill the master and read its output
-        time.sleep(2)
+        # Read lines from artiq_master (sequence of chars ending with '\n') asynchronously
+        output = []
+        end_time = time.time() + timeout
+        timed_out = False
+        unexpected_close = False
+        while True:
+            try:
+                line = await asyncio.wait_for(
+                    p_artiq_master.stdout.readline(), timeout=end_time - time.time()
+                )
+                output.append(line)
+            except asyncio.TimeoutError:
+                # Time is up! Kill the master process
+                logger.error("Timeout - killing artiq_master")
+                timed_out = True
+                p_artiq_master.kill()
+                break
 
-        artiq_master.kill()
-        _, out = artiq_master.communicate(timeout=1)
+            if not line:
+                logger.error("artiq_master closed unexpectedly")
+                unexpected_close = True
+                break
 
-        out = out.decode()
+            if "deletion of RID 0 completed" in line.decode():
+                logger.info("Experiment completed")
+                p_artiq_master.kill()
+                break
 
-        if "ERROR" in out:
-            print(out)
+        print(output)
+
+        if any("ERROR" in l.decode() for l in output):
             raise RuntimeError('"ERROR" detected in artiq_master output')
+        elif timed_out:
+            raise TimeoutError("Experiment timed out")
+        elif unexpected_close:
+            raise RuntimeError("artiq_master closed unexpectedly")
 
-        return out
+    def run_experiment(class_name, file_name, timeout=5.0):
+        loop = asyncio.get_event_loop()
+
+        returncode = loop.run_until_complete(
+            async_run_experiment(class_name, file_name, timeout)
+        )
+        loop.close()
+
+        return returncode
 
     return run_experiment
 
 
-@fixture
-def artiq_master(tmp_path: Path):
+async def artiq_master(tmp_path: Path) -> sp.Popen:
     """
     The deluxe version - make a new ARTIQ stack, launch it, submit this
     experiment to artiq_master using artiq_client and record the results
     """
-
-    import subprocess as sp
-    import os
-
     print(tmp_path)
 
     (tmp_path / "device_db.py").write_text(
@@ -340,18 +375,18 @@ def artiq_master(tmp_path: Path):
     else:
         env["PYTHONPATH"] = f"{os.getcwd()}"
 
-    p_artiq_master = sp.Popen(
-        ["artiq_master", "-vv"], stderr=sp.PIPE, stdout=sp.PIPE, cwd=tmp_path, env=env
+    p_artiq_master = await asyncio.create_subprocess_exec(
+        "artiq_master",
+        "-vv",
+        stderr=sp.STDOUT,
+        stdout=sp.PIPE,
+        cwd=tmp_path,
+        env=env,
     )
 
     wait_for_port(ARTIQ_MASTER_CHECK_PORT, timeout=5)
 
-    yield p_artiq_master
-
-    p_artiq_master.kill()
-    _, out = p_artiq_master.communicate()
-
-    logger.info("artiq_master output: %s", out)
+    return p_artiq_master
 
 
 @fixture(autouse=True)

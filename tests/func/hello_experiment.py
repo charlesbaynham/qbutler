@@ -40,9 +40,13 @@ class KernelExperiment(EnvExperiment):
     def build(self):
         self.setattr_device("core")
 
-    @kernel
     def run(self):
-        print("Hello!")
+        print("Hello from the host")
+        self.kernel()
+
+    @kernel
+    def kernel(self):
+        print("Hello from the core")
 
 
 class InvalidKernelExperiment(EnvExperiment):
