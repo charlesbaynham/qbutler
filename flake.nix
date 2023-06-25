@@ -34,7 +34,11 @@
     nixpkgs.follows = "mach-nix/nixpkgs";
 
     artiq = {
-      url = "git+https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git";
+      # Here I pin to a version of ARTIQ before ARTIQ's nixpkgs version was
+      # updated. After this point, mach-nix is now incompatible with nixpkgs and
+      # therefore ARTIQ. I therefore need to move us to something other than
+      # nixpkgs if we want to use the latest versions of ARTIQ... Argh!
+      url = "git+https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git?rev=6cb12bcf0264f4a691393cc1d93bd30791a329ad";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
