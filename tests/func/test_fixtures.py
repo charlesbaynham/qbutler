@@ -58,7 +58,7 @@ def test_invalid_kernels_fail(build_and_run_experiment):
 
 
 # @pytest.mark.slow
-def test_build_and_run_full_stack(build_and_run_full_stack):
+def test_build_and_run_full_stack_basic(build_and_run_full_stack):
     import hello_experiment
 
     print(build_and_run_full_stack("HelloExperiment", hello_experiment.__file__))

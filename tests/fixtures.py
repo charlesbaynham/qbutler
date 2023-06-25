@@ -283,7 +283,7 @@ def build_and_run_full_stack(tmp_path):
     # Start up an asyncio stack to monitor the master with a timeout
     async def async_run_experiment(class_name, file_name, timeout=5.0):
         # Start an artiq_master
-        p_artiq_master = await artiq_master(tmp_path)
+        p_artiq_master = await launch_artiq_master(tmp_path)
 
         # Submit experiment with artiq_client
         p_artiq_client_exp = sp.run(
@@ -346,7 +346,7 @@ def build_and_run_full_stack(tmp_path):
     return run_experiment
 
 
-async def artiq_master(tmp_path: Path) -> sp.Popen:
+async def launch_artiq_master(tmp_path: Path) -> sp.Popen:
     """
     The deluxe version - make a new ARTIQ stack, launch it, submit this
     experiment to artiq_master using artiq_client and record the results
