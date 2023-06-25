@@ -101,20 +101,24 @@ def plot_graph(tmp_path):
 
 
 @fixture
-def mock_core():
-    return Mock()
-
-
-@fixture
 def mock_db_writer():
     return Mock()
 
 
 @fixture
-def device_mgr(mock_core, mock_db_writer):
+def device_mgr(mock_db_writer):
+    mock_device_db = {
+        "core": {
+            "type": "local",
+            "module": "artiq.coredevice.core",
+            "class": "Core",
+            "arguments": {"host": None, "ref_period": 1e-9},
+        }
+    }
+
     class DummyDeviceDB:
-        def __init__(self):
-            self.data = Notifier({})
+        def __init__(self, device_db):
+            self.data = Notifier(device_db)
 
         def scan(self):
             pass
@@ -174,11 +178,10 @@ def device_mgr(mock_core, mock_db_writer):
             )
 
     return DeviceManager(
-        DummyDeviceDB(),
+        DummyDeviceDB(mock_device_db),
         virtual_devices={
             "scheduler": DummyScheduler(),
             "ccb": DummyCCB(),
-            "core": mock_core,
             "mock_db_writer": mock_db_writer,
         },
     )
