@@ -340,12 +340,7 @@ def build_and_run_full_stack(tmp_path):
                 await p_artiq_master.wait()
 
     def run_experiment(class_name, file_name, timeout=5.0):
-        loop = asyncio.get_event_loop()
-
-        returncode = loop.run_until_complete(
-            async_run_experiment(class_name, file_name, timeout)
-        )
-        loop.close()
+        returncode = asyncio.run(async_run_experiment(class_name, file_name, timeout))
 
         return returncode
 
