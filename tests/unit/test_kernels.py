@@ -1,3 +1,5 @@
+import pytest
+from artiq.coredevice.core import CompileError
 from artiq.experiment import EnvExperiment
 from artiq.experiment import kernel
 
@@ -25,4 +27,5 @@ def test_kernel_success(build_and_run_experiment):
 
 
 def test_kernel_failure(build_and_run_experiment):
-    build_and_run_experiment(FailingKernel)
+    with pytest.raises(CompileError):
+        build_and_run_experiment(FailingKernel)

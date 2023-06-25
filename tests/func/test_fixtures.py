@@ -1,5 +1,5 @@
 import pytest
-from artiq.experiment import EnvExperiment
+from artiq.coredevice.core import CompileError
 
 from qbutler.calibration import Calibration
 
@@ -32,6 +32,29 @@ def test_full_experiment_runner_fragment(build_and_run_experiment):
     build_and_run_experiment(
         hello_experiment.HelloFragmentExperiment, hello_experiment.__file__
     )
+
+
+def test_core_kernel_runs(build_and_run_experiment):
+    from hello_experiment import KernelExperiment
+
+    build_and_run_experiment(KernelExperiment)
+
+
+def test_core_mocking(build_and_run_experiment, mock_core):
+    from hello_experiment import KernelExperiment
+
+    assert len(mock_core.mock_calls) == 0
+
+    build_and_run_experiment(KernelExperiment)
+
+    assert len(mock_core.mock_calls) == 1
+
+
+def test_invalid_kernels_fail(build_and_run_experiment):
+    from hello_experiment import InvalidKernelExperiment
+
+    with pytest.raises(CompileError):
+        build_and_run_experiment(InvalidKernelExperiment)
 
 
 @pytest.mark.slow

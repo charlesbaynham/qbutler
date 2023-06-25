@@ -1,4 +1,5 @@
 from artiq.experiment import EnvExperiment
+from artiq.experiment import kernel
 from ndscan.experiment import ExpFragment
 from ndscan.experiment.entry_point import make_fragment_scan_exp
 
@@ -33,6 +34,24 @@ class HelloFragment(ExpFragment):
 
     def run_once(self):
         print("Hello!")
+
+
+class KernelExperiment(EnvExperiment):
+    def build(self):
+        self.setattr_device("core")
+
+    @kernel
+    def run(self):
+        print("Hello!")
+
+
+class InvalidKernelExperiment(EnvExperiment):
+    def build(self):
+        self.setattr_device("core")
+
+    @kernel
+    def run(self):
+        print("Hello!" + 123)
 
 
 HelloFragmentExperiment = make_fragment_scan_exp(HelloFragment)

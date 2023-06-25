@@ -9,6 +9,8 @@ from typing import Type
 from unittest.mock import Mock
 
 import numpy
+from artiq.coredevice.core import CommKernelDummy
+from artiq.coredevice.core import Core
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
 from artiq.language.environment import ProcessArgumentManager
@@ -184,7 +186,8 @@ def device_mgr(mock_db_writer):
             self.close_devices()
             self.virtual_devices[key] = obj
 
-    return DeviceManagerWithOverride(
+    # Build the device manager with our dummy services
+    mgr = DeviceManagerWithOverride(
         DummyDeviceDB(mock_device_db),
         virtual_devices={
             "scheduler": DummyScheduler(),
@@ -192,6 +195,22 @@ def device_mgr(mock_db_writer):
             "mock_db_writer": mock_db_writer,
         },
     )
+
+    # Replace the "run()" method of the mocked core's CommKernel with a Mock
+    # object so we can keep track of calls to it
+    dummy_core: Core = mgr.get("core")
+    dummy_core.comm.run = Mock()
+
+    return mgr
+
+
+@fixture
+def mock_core(device_mgr):
+    """Returns a mock object that replaced the core's CommKernel.run() method
+
+    This can be used to keep track of the number of times a kernel has been executed
+    """
+    return device_mgr.get("core").comm.run
 
 
 @fixture(scope="session", autouse=True)
