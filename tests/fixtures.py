@@ -285,53 +285,57 @@ def build_and_run_full_stack(tmp_path):
         # Start an artiq_master
         p_artiq_master = await launch_artiq_master(tmp_path)
 
-        # Submit experiment with artiq_client
-        p_artiq_client_exp = sp.run(
-            ["artiq_client", "-vv", "submit", "-c", class_name, file_name],
-            stderr=sp.STDOUT,
-            stdout=sp.PIPE,
-            timeout=1,
-            check=True,
-        )
+        try:
+            # Submit experiment with artiq_client
+            p_artiq_client_exp = sp.run(
+                ["artiq_client", "-vv", "submit", "-c", class_name, file_name],
+                stderr=sp.STDOUT,
+                stdout=sp.PIPE,
+                timeout=1,
+                check=True,
+            )
 
-        logger.info("artiq_client output: %s", p_artiq_client_exp.stdout.decode())
+            logger.info("artiq_client output: %s", p_artiq_client_exp.stdout.decode())
 
-        # Read lines from artiq_master (sequence of chars ending with '\n') asynchronously
-        output = []
-        end_time = time.time() + timeout
-        timed_out = False
-        unexpected_close = False
-        while True:
-            try:
-                line = await asyncio.wait_for(
-                    p_artiq_master.stdout.readline(), timeout=end_time - time.time()
-                )
-                output.append(line)
-            except asyncio.TimeoutError:
-                # Time is up! Kill the master process
-                logger.error("Timeout - killing artiq_master")
-                timed_out = True
+            # Read lines from artiq_master (sequence of chars ending with '\n') asynchronously
+            output = []
+            end_time = time.time() + timeout
+            timed_out = False
+            unexpected_close = False
+            while True:
+                try:
+                    line = await asyncio.wait_for(
+                        p_artiq_master.stdout.readline(), timeout=end_time - time.time()
+                    )
+                    output.append(line)
+                except asyncio.TimeoutError:
+                    # Time is up! Kill the master process
+                    logger.error("Timeout - killing artiq_master")
+                    timed_out = True
+                    break
+
+                if not line:
+                    logger.error("artiq_master closed unexpectedly")
+                    unexpected_close = True
+                    break
+
+                if "deletion of RID 0 completed" in line.decode():
+                    logger.info("Experiment completed")
+                    break
+
+            print(output)
+
+            if any("ERROR" in l.decode() for l in output):
+                raise RuntimeError('"ERROR" detected in artiq_master output')
+            elif timed_out:
+                raise TimeoutError("Experiment timed out")
+            elif unexpected_close:
+                raise RuntimeError("artiq_master closed unexpectedly")
+
+        finally:
+            if not unexpected_close:
                 p_artiq_master.kill()
-                break
-
-            if not line:
-                logger.error("artiq_master closed unexpectedly")
-                unexpected_close = True
-                break
-
-            if "deletion of RID 0 completed" in line.decode():
-                logger.info("Experiment completed")
-                p_artiq_master.kill()
-                break
-
-        print(output)
-
-        if any("ERROR" in l.decode() for l in output):
-            raise RuntimeError('"ERROR" detected in artiq_master output')
-        elif timed_out:
-            raise TimeoutError("Experiment timed out")
-        elif unexpected_close:
-            raise RuntimeError("artiq_master closed unexpectedly")
+                await p_artiq_master.wait()
 
     def run_experiment(class_name, file_name, timeout=5.0):
         loop = asyncio.get_event_loop()
