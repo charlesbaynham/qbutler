@@ -323,7 +323,9 @@ def build_and_run_full_stack(tmp_path):
                     logger.info("Experiment completed")
                     break
 
-            print(output)
+            print("artiq_master output:")
+            for l in output:
+                print(l.decode().strip())
 
             if any("ERROR" in l.decode() for l in output):
                 raise RuntimeError('"ERROR" detected in artiq_master output')
