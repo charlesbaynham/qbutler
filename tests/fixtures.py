@@ -9,12 +9,14 @@ import textwrap
 from pathlib import Path
 from typing import Callable
 from typing import Type
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 import numpy
 from artiq.coredevice.core import Core
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
+from artiq.experiment import rpc
 from artiq.language.environment import ProcessArgumentManager
 from artiq.master.worker_db import DatasetManager
 from artiq.master.worker_db import DeviceManager
@@ -201,6 +203,25 @@ def device_mgr(mock_db_writer):
             "mock_db_writer": mock_db_writer,
         },
     )
+
+    # Replace the Core.run() method (not CommKernel.run()) so that we return
+    # Mocks from kernels
+    def replacement_run(self, function, args, kwargs):
+        result = None
+
+        @rpc(flags={"async"})
+        def set_result(new_result):
+            nonlocal result
+            result = new_result
+
+        embedding_map, kernel_library, symbolizer, demangler = self.compile(
+            function, args, kwargs, set_result
+        )
+        self._run_compiled(kernel_library, embedding_map, symbolizer, demangler)
+
+        return MagicMock()
+
+    Core.run = replacement_run
 
     # Replace the "run()" method of the mocked core's CommKernel with a Mock
     # object so we can keep track of calls to it
