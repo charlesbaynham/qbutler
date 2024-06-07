@@ -6,7 +6,7 @@ from typing import Any
 from typing import Tuple
 from typing import Type
 
-from artiq.experiment import kernel
+from artiq.experiment import kernel, get_r
 
 import numpy as np
 from ndscan.experiment import ExpFragment
@@ -632,6 +632,13 @@ class Calibration(ExpFragment):
 
         self.reset_param(p_handle.name)
         self.recompute_param_defaults()
+
+    # %% Kernel functions:
+
+    @kernel
+    def _have_any_checks_expired(self):
+        # FIXME
+        self.core.get_rtio_counter_mu()
 
     @kernel
     def device_setup(self):
