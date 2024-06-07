@@ -2,11 +2,7 @@
 
 __author__ = "Charles Baynham <charles.baynham@gmail.com>"
 __all__ = []
-
-from ._version import get_version
-
-__version__ = get_version()
-del get_version
+__version__ = "0.1"
 
 # Patch setattr_calibration into ndscan if qbutler is already installed
 try:

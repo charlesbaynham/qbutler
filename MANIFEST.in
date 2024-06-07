@@ -1,3 +1,0 @@
-include qbutler/_version.py
-include requirements.in
-include requirementsDev.in
