@@ -6,6 +6,8 @@ from typing import Any
 from typing import Tuple
 from typing import Type
 
+from artiq.experiment import kernel
+
 import numpy as np
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
@@ -630,3 +632,21 @@ class Calibration(ExpFragment):
 
         self.reset_param(p_handle.name)
         self.recompute_param_defaults()
+
+    @kernel
+    def device_setup(self):
+        self.device_setup_subfragments()
+
+        # FIXME: Implement kernel functions! Here is the plan:
+
+        # Check if any of the checks have expired
+
+        # If so, rerun those ones on the kernel if possible, on the host if required
+
+        # I can tell if the checks are possible on the kernel because check_own_state will be a kernel
+
+        # If any checks failed, try to repair them on the kernel / host
+
+        # I can tell if kernel repair is possible because fix_own_state will be a kernel
+
+        # I should get rid of the default implementation of fix_own_state and the concept of "optimizable parameters" - it's too complex for a MWE
