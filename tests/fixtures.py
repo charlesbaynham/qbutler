@@ -1,16 +1,22 @@
+import asyncio
 import copy
 import inspect
 import logging
+import os
 import random as rand
+import subprocess as sp
 import textwrap
 from pathlib import Path
 from typing import Callable
 from typing import Type
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 import numpy
+from artiq.coredevice.core import Core
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
+from artiq.experiment import rpc
 from artiq.language.environment import ProcessArgumentManager
 from artiq.master.worker_db import DatasetManager
 from artiq.master.worker_db import DeviceManager
@@ -19,8 +25,20 @@ from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
 
+from tests.marker_exp import MarkerExperiment
+from tests.mock_device import MockDevice
+from tests.wait_for_port import wait_for_port
 
 logger = logging.getLogger(__name__)
+
+ARTIQ_MASTER_CHECK_PORT = 3251
+
+MOCKED_DEVICE_DESC = {
+    "type": "local",
+    "module": "tests.mock_device",
+    "class": "MockDevice",
+    "mocked": True,
+}
 
 
 @fixture
@@ -59,9 +77,9 @@ def argument_mgr():
 def fragment_factory(
     device_mgr, dataset_mgr, argument_mgr
 ) -> Callable[[Type["Fragment"]], Fragment]:
-    def fac(exp_class):
+    def fac(exp_class, **kwargs):
         frag = exp_class(
-            (device_mgr, dataset_mgr, argument_mgr, None), fragment_path=[]
+            (device_mgr, dataset_mgr, argument_mgr, None), fragment_path=[], **kwargs
         )
         frag.init_params()
         return frag
@@ -77,6 +95,33 @@ def experiment_factory(
         return exp_class((device_mgr, dataset_mgr, argument_mgr, None))
 
     return fac
+
+
+@fixture
+def fragment_precompiler(fragment_factory):
+    def do(exp):
+        def precompile(self):
+            for func in [self.device_setup, self.run_once, self.device_cleanup]:
+                if hasattr(func, "artiq_embedded"):
+                    precompiled = self.core.precompile(func)
+                    print(precompiled)
+
+        setattr(exp, "precompile", precompile)
+
+        exp_built = fragment_factory(exp)
+
+        if hasattr(exp_built.run_once, "artiq_embedded") and not hasattr(
+            exp_built, "core"
+        ):
+            raise TypeError("Kernel run_once but no core device")
+
+        if not hasattr(exp_built, "core"):
+            return  # This Fragment has no kernel code
+
+        exp_built.host_setup()
+        exp_built.precompile()
+
+    return do
 
 
 @fixture
@@ -101,20 +146,47 @@ def plot_graph(tmp_path):
 
 
 @fixture
-def mock_core():
-    return Mock()
-
-
-@fixture
 def mock_db_writer():
     return Mock()
 
 
 @fixture
-def device_mgr(mock_core, mock_db_writer):
+def device_mgr(mock_db_writer):
+    from device_db import device_db
+
+    mock_device_db = device_db.copy()
+    mock_device_db["core"] = {
+        "type": "local",
+        "module": "artiq.coredevice.core",
+        "class": "Core",
+        "arguments": {"host": None, "ref_period": 1e-9},
+    }
+
+    for key, desc in mock_device_db.items():
+        if "type" in desc and (
+            desc["type"] == "controller"
+            or (
+                desc["type"] == "local"
+                and ("mockmodule" in desc and "mockclass" in desc)
+            )
+        ):
+            new_desc = desc.copy()
+
+            new_desc.update(MOCKED_DEVICE_DESC)
+
+            if "mockmodule" in desc and "mockclass" in desc:
+                new_desc.update(
+                    {
+                        "module": desc["mockmodule"],
+                        "class": desc["mockclass"],
+                    }
+                )
+
+            mock_device_db[key] = new_desc
+
     class DummyDeviceDB:
-        def __init__(self):
-            self.data = Notifier({})
+        def __init__(self, device_db):
+            self.data = Notifier(device_db)
 
         def scan(self):
             pass
@@ -173,15 +245,61 @@ def device_mgr(mock_core, mock_db_writer):
                 "CCB for service '%s' (args %s, kwargs %s)", service, args, kwargs
             )
 
-    return DeviceManager(
-        DummyDeviceDB(),
+    class DeviceManagerWithOverride(DeviceManager):
+        # Add an "override" method to DeviceManger which lets us replace a
+        # device with our own object
+        def override_device(self, key, obj):
+            self.close_devices()
+            self.virtual_devices[key] = obj
+
+    # Build the device manager with our dummy services
+    mgr = DeviceManagerWithOverride(
+        DummyDeviceDB(mock_device_db),
         virtual_devices={
             "scheduler": DummyScheduler(),
             "ccb": DummyCCB(),
-            "core": mock_core,
             "mock_db_writer": mock_db_writer,
         },
     )
+
+    # Replace the Core.run() method (not CommKernel.run()) so that we return
+    # Mocks from kernels
+    def replacement_run(self, function, args, kwargs):
+        result = None
+
+        @rpc(flags={"async"})
+        def set_result(new_result):
+            nonlocal result
+            result = new_result
+
+        (
+            embedding_map,
+            kernel_library,
+            symbolizer,
+            demangler,
+            subkernel_arg_types,
+        ) = self.compile(function, args, kwargs, set_result)
+        self._run_compiled(kernel_library, embedding_map, symbolizer, demangler)
+
+        return MagicMock()
+
+    Core.run = replacement_run
+
+    # Replace the "run()" method of the mocked core's CommKernel with a Mock
+    # object so we can keep track of calls to it
+    dummy_core: Core = mgr.get("core")
+    dummy_core.comm.run = Mock()
+
+    return mgr
+
+
+@fixture
+def mock_core(device_mgr):
+    """Returns a mock object that replaced the core's CommKernel.run() method
+
+    This can be used to keep track of the number of times a kernel has been executed
+    """
+    return device_mgr.get("core").comm.run
 
 
 @fixture(scope="session", autouse=True)
@@ -241,45 +359,83 @@ def free_port():
 
 
 @fixture
-def build_and_run_full_stack(artiq_master):
+def build_and_run_full_stack(tmp_path):
     import subprocess as sp
     import time
 
-    def run_experiment(class_name, file_name):
-        p_artiq_client = sp.run(
-            ["artiq_client", "submit", "-c", class_name, file_name],
-            stderr=sp.STDOUT,
-            stdout=sp.PIPE,
-            timeout=1,
-        )
+    # Start up an asyncio stack to monitor the master with a timeout
+    async def async_run_experiment(class_name, file_name, timeout=5.0):
+        # Start an artiq_master
+        p_artiq_master = await launch_artiq_master(tmp_path)
 
-        # Wait two seconds then kill the master and read its output
-        time.sleep(2)
+        try:
+            # Submit experiment with artiq_client
+            p_artiq_client_exp = sp.run(
+                ["artiq_client", "-vv", "submit", "-c", class_name, file_name],
+                stderr=sp.STDOUT,
+                stdout=sp.PIPE,
+                timeout=1,
+                check=True,
+            )
 
-        artiq_master.kill()
-        _, out = artiq_master.communicate(timeout=1)
+            logger.info("artiq_client output: %s", p_artiq_client_exp.stdout.decode())
 
-        out = out.decode()
+            # Read lines from artiq_master (sequence of chars ending with '\n') asynchronously
+            output = []
+            end_time = time.time() + timeout
+            timed_out = False
+            unexpected_close = False
 
-        if "ERROR" in out:
-            print(out)
-            raise RuntimeError('"ERROR" detected in artiq_master output')
+            print("artiq_master output:")
 
-        return out
+            while True:
+                try:
+                    line = await asyncio.wait_for(
+                        p_artiq_master.stdout.readline(), timeout=end_time - time.time()
+                    )
+                    line = line.decode().strip()
+                    print(line)
+                    output.append(line)
+                except asyncio.TimeoutError:
+                    # Time is up! Kill the master process
+                    logger.error("Timeout - killing artiq_master")
+                    timed_out = True
+                    break
+
+                if not line:
+                    logger.error("artiq_master closed unexpectedly")
+                    unexpected_close = True
+                    break
+
+                if "deletion of RID 0 completed" in line:
+                    logger.info("Experiment completed")
+                    break
+
+            if any("ERROR" in l for l in output):
+                raise RuntimeError('"ERROR" detected in artiq_master output')
+            elif timed_out:
+                raise TimeoutError("Experiment timed out")
+            elif unexpected_close:
+                raise RuntimeError("artiq_master closed unexpectedly")
+
+        finally:
+            if not unexpected_close:
+                p_artiq_master.kill()
+                await p_artiq_master.wait()
+
+    def run_experiment(class_name, file_name, timeout=5.0):
+        returncode = asyncio.run(async_run_experiment(class_name, file_name, timeout))
+
+        return returncode
 
     return run_experiment
 
 
-@fixture
-def artiq_master(tmp_path: Path):
+async def launch_artiq_master(tmp_path: Path) -> sp.Popen:
     """
     The deluxe version - make a new ARTIQ stack, launch it, submit this
     experiment to artiq_master using artiq_client and record the results
     """
-
-    import subprocess as sp
-    import os
-
     print(tmp_path)
 
     (tmp_path / "device_db.py").write_text(
@@ -290,7 +446,7 @@ def artiq_master(tmp_path: Path):
                 "type": "local",
                 "module": "artiq.coredevice.core",
                 "class": "Core",
-                "arguments": {"host": "1.2.3.4", "ref_period": 1e-09, "target": "rv32g"},
+                "arguments": {"host": None, "ref_period": 1e-09, "target": "rv32g"},
             },
         }
         """
@@ -304,16 +460,18 @@ def artiq_master(tmp_path: Path):
     else:
         env["PYTHONPATH"] = f"{os.getcwd()}"
 
-    p_artiq_master = sp.Popen(
-        ["artiq_master", "-vv"], stderr=sp.PIPE, stdout=sp.PIPE, cwd=tmp_path, env=env
+    p_artiq_master = await asyncio.create_subprocess_exec(
+        "artiq_master",
+        "-vv",
+        stderr=sp.STDOUT,
+        stdout=sp.PIPE,
+        cwd=tmp_path,
+        env=env,
     )
 
-    yield p_artiq_master
+    wait_for_port(ARTIQ_MASTER_CHECK_PORT, timeout=5)
 
-    p_artiq_master.kill()
-    _, out = p_artiq_master.communicate()
-
-    print(out)
+    return p_artiq_master
 
 
 @fixture(autouse=True)
