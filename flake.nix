@@ -1,5 +1,5 @@
 {
-  description = "Application packaged using poetry2nix";
+  description = "Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably.";
 
   inputs = {
     poetry2nix = {
@@ -13,7 +13,7 @@
       let
         # see https://github.com/nix-community/poetry2nix/tree/master#api for more functions and examples.
         pkgs = nixpkgs.legacyPackages.${system};
-        inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; }) mkPoetryPackages;
+        inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; }) mkPoetryPackages mkPoetryEnv;
       in
       {
         packages = {
@@ -26,8 +26,8 @@
         #     nix develop
         #
         # Use this shell for developing your app.
-        devShells.default = pkgs.mkShell {
-          inputsFrom = [ self.packages.${system}.qbutler ];
+        devShells.default = mkPoetryEnv {
+          projectDir = ./.;
         };
 
         # Shell for poetry.
