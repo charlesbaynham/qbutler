@@ -26,8 +26,12 @@
         #     nix develop
         #
         # Use this shell for developing your app.
-        devShells.default = mkPoetryEnv {
-          projectDir = ./.;
+        devShells.default = pkgs.mkShell {
+          packages = [
+            (mkPoetryEnv {
+              projectDir = ./.;
+            })
+          ];
         };
 
         # Shell for poetry.
