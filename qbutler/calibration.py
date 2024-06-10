@@ -19,6 +19,7 @@ from ndscan.experiment.parameters import StringParam
 
 from . import dag
 from . import patch_ndscan  # noqa
+from ndscan.utils import is_kernel
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,10 @@ class Calibration(ExpFragment):
 
         # Get dependency list
         self._dependents = dag.get_dependencies(self, furthest_first=False)
+        # Filter for the dependencies that must run on the core
+        self._kernel_checkers = [is_kernel(c.check_own_state) for c in self._dependents]
+        self._kernel_fixers = [is_kernel(c.fix_own_state) for c in self._dependents]
+        # FIXME continue here?
 
     def run_once(self) -> None:
         """
