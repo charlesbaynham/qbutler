@@ -52,7 +52,6 @@ nix_build:
     - if: $CACHIX_CACHE_NAME && $CACHIX_AUTH_TOKEN && $CI_PIPELINE_SOURCE == "push"
   script:
     - cachix use "$CACHIX_CACHE_NAME"
-    - cachix watch-exec $CACHIX_CACHE_NAME -- nix build --no-link .
     - cachix watch-exec $CACHIX_CACHE_NAME -- nix develop -c echo Build complete
 
 ### Tests ###
