@@ -3,7 +3,7 @@ name = "qbutler"
 version = "0.1.0"
 description = "Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably."
 authors = ["Charles Baynham <charles.baynham@gmail.com>"]
-readme = "README.md"
+readme = "README.rst"
 
 [tool.poetry.dependencies]
 python = "^3.9"
