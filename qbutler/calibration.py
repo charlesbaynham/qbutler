@@ -173,6 +173,9 @@ class Calibration(ExpFragment):
         # Register this Calibration as having been built
         dag.add_to_dependency_map(self, None)
 
+        # Get dependency list
+        self._dependents = dag.get_dependencies(self, furthest_first=False)
+
     def run_once(self) -> None:
         """
         Run the checks of this Calibration once and push the results into the
