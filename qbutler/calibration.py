@@ -15,7 +15,7 @@ from ndscan.experiment.parameters import FloatParamHandle
 from ndscan.experiment.parameters import FloatParamStore
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
-from ndscan.utils import is_kernel
+from ndscan.experiment.utils import is_kernel
 
 from . import dag
 from . import patch_ndscan  # noqa

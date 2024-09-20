@@ -150,7 +150,7 @@ def mock_db_writer():
 
 @fixture
 def device_mgr(mock_db_writer):
-    from device_db import device_db
+    from example.device_db import device_db
 
     mock_device_db = device_db.copy()
     mock_device_db["core"] = {
