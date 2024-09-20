@@ -24,7 +24,7 @@ class ImporterExperiment(EnvExperiment):
         pass
 
     def run(self):
-        import qbutler
+        pass
 
 
 class HelloFragment(ExpFragment):

@@ -1,23 +1,38 @@
-
 repos:
   # Several generic fixes
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.3.0
-    hooks:
-      - id: trailing-whitespace
-      - id: check-merge-conflict
-      - id: end-of-file-fixer
-      - id: mixed-line-ending
-      - id: check-yaml
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v4.6.0
+  hooks:
+  - id: trailing-whitespace
+  - id: check-merge-conflict
+  - id: end-of-file-fixer
+  - id: mixed-line-ending
+  - id: check-yaml
+    args: [--unsafe]
 
-  # Sort python imports
-  - repo: https://github.com/asottile/reorder_python_imports
-    rev: v3.8.1
-    hooks:
-    - id: reorder-python-imports
+# Sort python imports
+- repo: https://github.com/PyCQA/isort
+  rev: 5.13.2
+  hooks:
+  - id: isort
+    args: [--profile, black, --force-single-line-imports]
 
-  # Format the code with a conventional PEP8 style
-  - repo: https://github.com/psf/black
-    rev: 22.6.0
-    hooks:
-      - id: black
+# Format the code with a conventional PEP8 style
+- repo: https://github.com/psf/black
+  rev: 24.8.0
+  hooks:
+  - id: black
+
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.14.0
+  hooks:
+  - id: pretty-format-java
+    args: [--autofix]
+  - id: pretty-format-yaml
+    args: [--autofix, --indent, '2']
+
+- repo: https://github.com/PyCQA/autoflake
+  rev: v2.3.1
+  hooks:
+  - id: autoflake
+    args: [--in-place, --remove-all-unused-imports, --remove-unused-variables, .]

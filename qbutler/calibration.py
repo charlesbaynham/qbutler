@@ -1,14 +1,13 @@
 import logging
-from enum import auto
 from enum import Flag
+from enum import auto
 from time import time
 from typing import Any
 from typing import Tuple
 from typing import Type
 
-from artiq.experiment import kernel, get_r
-
 import numpy as np
+from artiq.experiment import kernel
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
@@ -16,10 +15,10 @@ from ndscan.experiment.parameters import FloatParamHandle
 from ndscan.experiment.parameters import FloatParamStore
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
+from ndscan.utils import is_kernel
 
 from . import dag
 from . import patch_ndscan  # noqa
-from ndscan.utils import is_kernel
 
 logger = logging.getLogger(__name__)
 

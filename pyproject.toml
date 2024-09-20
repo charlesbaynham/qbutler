@@ -1,14 +1,24 @@
 [tool.poetry]
 name = "qbutler"
-version = "0.1.0"
+version = "0.2"
 description = "Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably."
 authors = ["Charles Baynham <charles.baynham@gmail.com>"]
 readme = "README.rst"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
+
+sipyco = { git = "https://github.com/m-labs/sipyco.git" }
+artiq = { git = "https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git" }
+ndscan = { git = "https://github.com/OxfordIonTrapGroup/ndscan.git" }
+
+# Pin pyqt versions below 5.15.11, where an incompatibility with poetry2nix appeared
+pyqt5 = "5.15.9"
+pyqt5-qt5 = "5.15.2"
+pyqt5-sip = "12.12.2"
 
 networkx = "^2.8.4"
+numpy = "^1.22.1"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.4.0"
@@ -18,6 +28,7 @@ pytest = "^7.4.2"
 pytest-timeout = "^2.1.0"
 coverage = "^7.3.2"
 tomli = "^2.0.1"
+matplotlib = "^3.9.2"
 
 # Remove the sphinx dependencies for now (2023-10-06) as they cause an infinite recursion in poetry2nix
 #sphinx = "^7.2.6"
@@ -28,7 +39,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
+
 xfail_strict = true
 testpaths = "tests"
 pythonpath = "."
-addopts= "-n auto"

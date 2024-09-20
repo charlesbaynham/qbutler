@@ -2,7 +2,6 @@ import asyncio
 import copy
 import inspect
 import logging
-import os
 import random as rand
 import subprocess as sp
 import textwrap
@@ -25,8 +24,6 @@ from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
 
-from tests.marker_exp import MarkerExperiment
-from tests.mock_device import MockDevice
 from tests.wait_for_port import wait_for_port
 
 logger = logging.getLogger(__name__)
@@ -128,8 +125,9 @@ def fragment_precompiler(fragment_factory):
 def plot_graph(tmp_path):
     def func(name=None):
         import matplotlib.pyplot as plt
-        from qbutler.dag import _get_graph
         import networkx as nx
+
+        from qbutler.dag import _get_graph
 
         if name is None:
             name = "graph"
@@ -436,6 +434,10 @@ async def launch_artiq_master(tmp_path: Path) -> sp.Popen:
     The deluxe version - make a new ARTIQ stack, launch it, submit this
     experiment to artiq_master using artiq_client and record the results
     """
+
+    import os
+    import subprocess as sp
+
     print(tmp_path)
 
     (tmp_path / "device_db.py").write_text(
