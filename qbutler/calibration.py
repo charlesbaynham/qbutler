@@ -647,7 +647,7 @@ class Calibration(ExpFragment):
         # FIXME
         self.core.get_rtio_counter_mu()
 
-    @kernel
+    @kernel  # FIXME: This is the problem. I'm always trying to use a kernel even when I shouldn't
     def device_setup(self):
         self.device_setup_subfragments()
 
