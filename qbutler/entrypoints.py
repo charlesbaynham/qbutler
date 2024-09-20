@@ -14,12 +14,10 @@ Expose the final Calibration in a DAG as an attribute of the ARTIQ
 HasEnvironment object, ready for its methods to be called (see the documentation
 for :class:`~qbutler.calibration.Calibration` for details).
 """
-from time import sleep
+
 from typing import Type
 
 from artiq.experiment import EnvExperiment
-from artiq.experiment import NumberValue
-from artiq.master.scheduler import Scheduler
 from ndscan.experiment import Fragment
 
 from .calibration import Calibration

@@ -19,7 +19,6 @@ from pytest import fixture
 from sipyco.sync_struct import Notifier
 from sipyco.sync_struct import process_mod
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -83,8 +82,9 @@ def experiment_factory(
 def plot_graph(tmp_path):
     def func(name=None):
         import matplotlib.pyplot as plt
-        from qbutler.dag import _get_graph
         import networkx as nx
+
+        from qbutler.dag import _get_graph
 
         if name is None:
             name = "graph"
@@ -277,8 +277,8 @@ def artiq_master(tmp_path: Path):
     experiment to artiq_master using artiq_client and record the results
     """
 
-    import subprocess as sp
     import os
+    import subprocess as sp
 
     print(tmp_path)
 
