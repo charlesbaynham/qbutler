@@ -39,6 +39,7 @@ MonitorMaster
 - [x]   Despite using async, launch each monitor in its own thread
         so that users can ignore the complexities of asyncronous coding
 """
+
 import asyncio
 import logging
 from typing import Any

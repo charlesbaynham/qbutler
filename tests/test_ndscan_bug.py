@@ -1,4 +1,3 @@
-import pytest
 from artiq.experiment import EnvExperiment
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import run_fragment_once
@@ -21,7 +20,6 @@ class MyEnvExperiment(EnvExperiment):
         run_fragment_once(self.myfragment)
 
 
-@pytest.mark.xfail
 def test_accumulation_of_default_params(experiment_factory):
     # See https://github.com/OxfordIonTrapGroup/ndscan/pull/310 for discussion
     exp = experiment_factory(MyEnvExperiment)

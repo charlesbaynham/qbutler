@@ -1,6 +1,6 @@
 import logging
-from enum import auto
 from enum import Flag
+from enum import auto
 from time import time
 from typing import Any
 from typing import Tuple

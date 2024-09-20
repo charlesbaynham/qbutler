@@ -1,5 +1,3 @@
-from weakref import ref
-
 import pytest
 
 import qbutler.dag
