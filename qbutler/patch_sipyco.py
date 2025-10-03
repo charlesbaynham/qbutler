@@ -15,14 +15,18 @@ def encode_calibrationresult(self, r):
 
 if hasattr(pyon, "register"):
     # This is a newer version of sipyco that supports custom encoders
-    pyon.register(
-        [CalibrationResult],
-        name="calibrationresult",
-        encode=lambda r: str(int(r)),
-        decode=lambda x: x,
-    )
+    try:
+        pyon.register(
+            [CalibrationResult],
+            name="calibrationresult",
+            encode=lambda r: str(int(r)),
+            decode=lambda x: x,
+        )
 
-    logger.debug("CalibrationResult registered with sipyco.pyon")
+        logger.debug("CalibrationResult registered with sipyco.pyon")
+    except AssertionError:
+        # Already registered - we are being scanned by ARTIQ
+        pass
 
 else:
     # This is an old version of sipyco that doesn't support custom encoders
