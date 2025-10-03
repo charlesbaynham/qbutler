@@ -10,7 +10,7 @@ python = "^3.10"
 
 sipyco = { git = "https://github.com/m-labs/sipyco.git" }
 artiq = { git = "https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git" }
-ndscan = { git = "https://github.com/OxfordIonTrapGroup/ndscan.git" }
+ndscan = { git = "https://gitlab.com/aion-physics/code/artiq/forks/ndscan.git", branch = "transitive-rebinding-qt5" }
 
 # Pin pyqt versions below 5.15.11, where an incompatibility with poetry2nix appeared
 pyqt5 = "5.15.9"
