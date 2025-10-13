@@ -86,7 +86,7 @@ def make_monitor_controller(
 
     **Example usage**::
 
-        class SimpleMonitor(Calibration):
+        class SimpleMonitor(Calibr  ation):
             def build_calibration(self):
                 self.set_timeout(1.0)  # 1s timeout
 

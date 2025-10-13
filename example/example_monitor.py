@@ -40,10 +40,6 @@ class RandomMonitor(Calibration):
         return result, r
 
 
-# def my_db_logger(self, name, state, data):
-#     self.my_db_driver.write(name, data)
-
-
 MyMonitorMaster = make_monitor_controller(
     "MyMonitorMaster", monitors={"simple": SimpleMonitor, "random": RandomMonitor}
 )
