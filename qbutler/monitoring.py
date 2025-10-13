@@ -38,10 +38,14 @@ MonitorMaster
 
 - [x]   Despite using async, launch each monitor in its own thread
         so that users can ignore the complexities of asyncronous coding
+
+- [x]   Publishes DAG structure and monitor status to datasets for visualization
 """
 
 import asyncio
+import json
 import logging
+from time import time
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -53,6 +57,7 @@ from artiq.master.scheduler import Scheduler
 from ndscan.experiment import ExpFragment
 from ndscan.experiment.entry_point import make_fragment_scan_exp
 
+from qbutler import dag
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 
@@ -65,6 +70,7 @@ def make_monitor_controller(
     data_logger: Callable[[Calibration, str, CalibrationResult, Any], None] = None,
     devices: Iterable[str] = (),
     pipeline: str = "monitors",
+    dataset_prefix: str = "monitors.",
 ):
     """
     Make an EnvExperiment that manages a list of Calibrations and regularly logs
@@ -81,12 +87,19 @@ def make_monitor_controller(
     Monitors must have a timeout set that is not zero, otherwise an error will
     be thrown (see :meth:`.set_timeout`).
 
+    The MonitorController publishes the following datasets for visualization:
+
+    * ``<dataset_prefix>dag_structure``: JSON string containing the DAG structure
+    * ``<dataset_prefix><monitor_name>.status``: CalibrationResult integer
+    * ``<dataset_prefix><monitor_name>.data``: Data value from check_own_state
+    * ``<dataset_prefix><monitor_name>.timestamp``: Unix timestamp of last check
+
     TODO: Have the MonitorController optionally try to repair broken
     Calibrations
 
     **Example usage**::
 
-        class SimpleMonitor(Calibr  ation):
+        class SimpleMonitor(Calibration):
             def build_calibration(self):
                 self.set_timeout(1.0)  # 1s timeout
 
@@ -115,6 +128,10 @@ def make_monitor_controller(
 
         pipeline (str):
             Default pipeline for the monitors to run in
+
+        dataset_prefix (str):
+            Prefix for all datasets published by this monitor controller.
+            Defaults to "monitors."
     """
 
     class MonitorController(ExpFragment):
@@ -127,6 +144,7 @@ def make_monitor_controller(
             self._monitors: Dict[str, Calibration] = {}
             self._monitor_tasks: Dict[str, asyncio.Task] = {}
             self._stop_now = False
+            self._dataset_prefix = dataset_prefix
 
             for monitor_name, monitor_type in monitors.items():
                 enable_key = f"enable_{monitor_name}"
@@ -145,6 +163,49 @@ def make_monitor_controller(
 
             for device_key in devices:
                 self.setattr_device(device_key)
+
+            # Publish initial DAG structure
+            self._publish_dag_structure()
+
+        def _publish_dag_structure(self):
+            """Publish the DAG structure to datasets for the applet"""
+            nodes = []
+            edges = []
+
+            # Get all monitor nodes
+            for monitor_name in self._monitors.keys():
+                nodes.append(monitor_name)
+
+            # Get dependencies between monitors
+            for monitor_name, monitor in self._monitors.items():
+                deps = dag.get_dependencies(monitor)
+                # deps includes the monitor itself and all its dependencies
+                # We only want the immediate dependencies
+                for dep in deps[:-1]:  # Exclude self (last element)
+                    dep_name = None
+                    # Find the name of this dependency in our monitors
+                    for name, mon in self._monitors.items():
+                        if mon is dep:
+                            dep_name = name
+                            break
+
+                    if dep_name:
+                        # Edge points from dependent to dependency
+                        edges.append([monitor_name, dep_name])
+
+            dag_data = {
+                "nodes": nodes,
+                "edges": edges,
+            }
+
+            logger.debug(f"Publishing DAG structure: {dag_data}")
+
+            self.set_dataset(
+                self._dataset_prefix + "dag_structure",
+                json.dumps(dag_data),
+                broadcast=True,
+                persist=False,
+            )
 
         def request_stop(self):
             logger.info("Stop requested")
@@ -247,14 +308,45 @@ def make_monitor_controller(
 
                 logger.debug("Monitor %s reported state %s/%s", name, state, data)
 
+                # Publish to datasets for applet
+                self._publish_monitor_status(name, state, data)
+
+                # Call user's data logger
                 self.data_logger(name, state, data)
 
                 logger.debug("Monitor %s sleeping for %s seconds", name, timeout)
 
                 await asyncio.sleep(timeout)
 
+        def _publish_monitor_status(
+            self, name: str, state: CalibrationResult, data: Any
+        ):
+            """Publish monitor status to datasets for the applet"""
+            prefix = self._dataset_prefix + name
+
+            self.set_dataset(
+                prefix + ".status",
+                int(state),
+                broadcast=True,
+                persist=False,
+            )
+
+            self.set_dataset(
+                prefix + ".data",
+                data,
+                broadcast=True,
+                persist=False,
+            )
+
+            self.set_dataset(
+                prefix + ".timestamp",
+                time(),
+                broadcast=True,
+                persist=False,
+            )
+
     if data_logger is None:
-        data_logger = lambda _, name, state, data: logger.info(
+        data_logger = lambda name, state, data: logger.info(
             "Monitor %s - %s - %s", name, state, data
         )
 
