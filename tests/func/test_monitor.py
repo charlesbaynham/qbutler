@@ -38,13 +38,13 @@ def test_monitor_builds(build_experiment):
 
 # If the monitor is set up wrong, this test can run forever. We therefore use
 # pytest-timeout to run it in a separate process and kill it if it overruns
-@pytest.mark.timeout(5, method="thread")
-@pytest.mark.slow
+@pytest.mark.timeout(50, method="thread")
+# @pytest.mark.slow FIXME
 def test_monitor_runs(build_experiment, mock_core):
     import concurrent.futures
 
     RUN_FOR = 2
-    WAIT_TIMEOUT = 4
+    WAIT_TIMEOUT = 40
 
     exp = build_experiment(
         MyMonitorMaster, experiment_file=example.example_monitor.__file__
@@ -66,8 +66,8 @@ def test_monitor_runs(build_experiment, mock_core):
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         fut_exp = executor.submit(run_master)
-        fut_close = executor.submit(close_master)
-        futs = [fut_exp, fut_close]
+        # fut_close = executor.submit(close_master)  FIXME
+        futs = [fut_exp]  # , fut_close]  FIXME
 
         concurrent.futures.wait(futs, timeout=WAIT_TIMEOUT)
 

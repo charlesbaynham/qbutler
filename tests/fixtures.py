@@ -107,7 +107,15 @@ def mock_core():
 
 @fixture
 def mock_db_writer():
-    return Mock()
+    mock = Mock()
+
+    def log_method_call(name, *args, **kwargs):
+        logger.warning(f"Mock method called: {name} with args={args}, kwargs={kwargs}")
+
+    mock.side_effect = lambda *args, **kwargs: log_method_call(
+        "mock_method", *args, **kwargs
+    )
+    return mock
 
 
 @fixture

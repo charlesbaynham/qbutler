@@ -366,6 +366,85 @@ class MonitorDAGApplet(QtWidgets.QMainWindow):
         # Dataset subscriber (will be set up by ARTIQ applet machinery)
         self.datasets = {}
 
+        # Load dummy data for standalone testing
+        use_dummy_data = getattr(args, "dummy_data", False)
+        if use_dummy_data:
+            self._load_dummy_data()
+
+    def _load_dummy_data(self):
+        """Load dummy data for standalone testing"""
+        import time
+
+        logger.info("Loading dummy data for standalone testing")
+
+        # Create a sample DAG structure
+        dummy_dag = {
+            "nodes": ["laser_lock", "temperature", "power", "frequency", "alignment"],
+            "edges": [
+                ["frequency", "laser_lock"],
+                ["power", "laser_lock"],
+                ["temperature", "power"],
+                ["alignment", "power"],
+            ],
+        }
+
+        # Simulate dataset updates
+        self.datasets[self.dataset_prefix + "dag_structure"] = json.dumps(dummy_dag)
+
+        # Add status data for each node with different states
+        current_time = time.time()
+
+        dummy_statuses = {
+            "laser_lock": (0, 98.5, current_time),  # OK
+            "temperature": (0, 23.4, current_time - 5),  # OK
+            "power": (4, 0.85, current_time - 2),  # BAD_DATA
+            "frequency": (1, 150.3e6, current_time - 30),  # BAD_EXPIRED
+            "alignment": (0, 0.92, current_time - 1),  # OK
+        }
+
+        for name, (status, data, timestamp) in dummy_statuses.items():
+            self.datasets[f"{self.dataset_prefix}{name}.status"] = status
+            self.datasets[f"{self.dataset_prefix}{name}.data"] = data
+            self.datasets[f"{self.dataset_prefix}{name}.timestamp"] = timestamp
+
+        # Trigger data update
+        self.data_changed(self.datasets, [])
+
+        # Set up timer to simulate live updates
+        self.dummy_update_timer = QtCore.QTimer()
+        self.dummy_update_timer.timeout.connect(self._update_dummy_data)
+        self.dummy_update_timer.start(2000)  # Update every 2 seconds
+
+    def _update_dummy_data(self):
+        """Simulate live data updates for testing"""
+        import random
+        import time
+
+        # Randomly update one of the monitors
+        monitors = ["laser_lock", "temperature", "power", "frequency", "alignment"]
+        monitor_to_update = random.choice(monitors)
+
+        # Cycle through different statuses
+        statuses = [0, 0, 0, 1, 4]  # Mostly OK, sometimes bad
+        new_status = random.choice(statuses)
+        new_data = random.uniform(0, 100)
+        new_timestamp = time.time()
+
+        self.datasets[f"{self.dataset_prefix}{monitor_to_update}.status"] = new_status
+        self.datasets[f"{self.dataset_prefix}{monitor_to_update}.data"] = new_data
+        self.datasets[f"{self.dataset_prefix}{monitor_to_update}.timestamp"] = (
+            new_timestamp
+        )
+
+        logger.debug(
+            f"Dummy update: {monitor_to_update} -> status={new_status}, data={new_data:.2f}"
+        )
+
+        # Update the widget
+        self.dag_widget.update_node_status(
+            monitor_to_update, new_status, new_data, new_timestamp
+        )
+
     def _create_legend(self):
         """Create a legend showing status colors"""
         legend_dock = QtWidgets.QDockWidget("Legend", self)
@@ -476,6 +555,9 @@ def main():
     parser = argparse.ArgumentParser(description="Monitor DAG Applet")
     parser.add_argument(
         "--dataset-prefix", default="monitors.", help="Prefix for monitor datasets"
+    )
+    parser.add_argument(
+        "--dummy-data", action="store_true", help="Load dummy data for testing"
     )
 
     args = parser.parse_args()
