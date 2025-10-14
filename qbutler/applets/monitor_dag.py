@@ -123,76 +123,78 @@ class DAGWidget(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
 
         # Fill background
-        painter.fillRect(self.rect(), QtGui.QColor(30, 30, 30))
+        painter.fillRect(self.rect(), QtGui.QColor(255, 0, 0))
+        # painter.fillRect(self.rect(), QtGui.QColor(30, 30, 30))
 
-        if not self.nodes:
-            # Draw "waiting for data" message
-            painter.setPen(QtGui.QColor(200, 200, 200))
-            font = painter.font()
-            font.setPointSize(16)
-            painter.setFont(font)
-            painter.drawText(
-                self.rect(), QtCore.Qt.AlignCenter, "Waiting for monitor data..."
-            )
-            return
+        # FIXME WIP
+        # if not self.nodes:
+        #     # Draw "waiting for data" message
+        #     painter.setPen(QtGui.QColor(200, 200, 200))
+        #     font = painter.font()
+        #     font.setPointSize(16)
+        #     painter.setFont(font)
+        #     painter.drawText(
+        #         self.rect(), QtCore.Qt.AlignCenter, "Waiting for monitor data..."
+        #     )
+        #     return
 
-        # Apply transformations
-        painter.translate(
-            self.width() / 2 + self.offset_x, self.height() / 2 + self.offset_y
-        )
-        painter.scale(self.scale, self.scale)
+        # # Apply transformations
+        # painter.translate(
+        #     self.width() / 2 + self.offset_x, self.height() / 2 + self.offset_y
+        # )
+        # painter.scale(self.scale, self.scale)
 
-        # Draw edges
-        pen = QtGui.QPen(QtGui.QColor(100, 100, 100), 2)
-        pen.setStyle(QtCore.Qt.SolidLine)
-        painter.setPen(pen)
+        # # Draw edges
+        # pen = QtGui.QPen(QtGui.QColor(100, 100, 100), 2)
+        # pen.setStyle(QtCore.Qt.SolidLine)
+        # painter.setPen(pen)
 
-        for source_name, target_name in self.edges:
-            if source_name in self.nodes and target_name in self.nodes:
-                source = self.nodes[source_name]
-                target = self.nodes[target_name]
+        # for source_name, target_name in self.edges:
+        #     if source_name in self.nodes and target_name in self.nodes:
+        #         source = self.nodes[source_name]
+        #         target = self.nodes[target_name]
 
-                # Draw arrow from source to target
-                painter.drawLine(
-                    int(source.x), int(source.y), int(target.x), int(target.y)
-                )
+        #         # Draw arrow from source to target
+        #         painter.drawLine(
+        #             int(source.x), int(source.y), int(target.x), int(target.y)
+        #         )
 
-                # Draw arrowhead
-                self._draw_arrow_head(painter, source, target)
+        #         # Draw arrowhead
+        #         self._draw_arrow_head(painter, source, target)
 
-        # Draw nodes
-        for name, node in self.nodes.items():
-            # Draw node circle
-            color = node.get_color()
-            painter.setBrush(QtGui.QBrush(color))
+        # # Draw nodes
+        # for name, node in self.nodes.items():
+        #     # Draw node circle
+        #     color = node.get_color()
+        #     painter.setBrush(QtGui.QBrush(color))
 
-            # Highlight selected node
-            if name == self.selected_node:
-                pen = QtGui.QPen(QtGui.QColor(255, 255, 255), 4)
-            else:
-                pen = QtGui.QPen(QtGui.QColor(50, 50, 50), 2)
-            painter.setPen(pen)
+        #     # Highlight selected node
+        #     if name == self.selected_node:
+        #         pen = QtGui.QPen(QtGui.QColor(255, 255, 255), 4)
+        #     else:
+        #         pen = QtGui.QPen(QtGui.QColor(50, 50, 50), 2)
+        #     painter.setPen(pen)
 
-            painter.drawEllipse(
-                QtCore.QPointF(node.x, node.y), node.radius, node.radius
-            )
+        #     painter.drawEllipse(
+        #         QtCore.QPointF(node.x, node.y), node.radius, node.radius
+        #     )
 
-            # Draw node label
-            painter.setPen(QtGui.QColor(255, 255, 255))
-            font = painter.font()
-            font.setPointSize(10)
-            font.setBold(True)
-            painter.setFont(font)
+        #     # Draw node label
+        #     painter.setPen(QtGui.QColor(255, 255, 255))
+        #     font = painter.font()
+        #     font.setPointSize(10)
+        #     font.setBold(True)
+        #     painter.setFont(font)
 
-            text_rect = QtCore.QRectF(
-                node.x - node.radius,
-                node.y - 8,
-                node.radius * 2,
-                16,
-            )
-            painter.drawText(
-                text_rect, QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, name
-            )
+        #     text_rect = QtCore.QRectF(
+        #         node.x - node.radius,
+        #         node.y - 8,
+        #         node.radius * 2,
+        #         16,
+        #     )
+        #     painter.drawText(
+        #         text_rect, QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, name
+        #     )
 
     def _draw_arrow_head(self, painter, source: GraphNode, target: GraphNode):
         """Draw an arrowhead at the target end of an edge"""
