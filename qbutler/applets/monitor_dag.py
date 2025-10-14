@@ -93,17 +93,26 @@ class DAGWidget(QtWidgets.QWidget):
             nodes: Dict mapping node names to (x, y) positions
             edges: List of (source, target) tuples
         """
+        logger.info(f"Setting graph structure: {len(nodes)} nodes, {len(edges)} edges")
         self.nodes = {name: GraphNode(name, x, y) for name, (x, y) in nodes.items()}
         self.edges = edges
+        logger.debug(f"Nodes: {list(nodes.keys())}")
+        logger.debug(f"Edges: {edges}")
         self.update()
 
     def update_node_status(self, name: str, status: int, data, timestamp: float):
         """Update the status of a node"""
         if name in self.nodes:
             node = self.nodes[name]
+            old_status = node.status
             node.status = status
             node.data = data
             node.timestamp = timestamp
+
+            if old_status != status:
+                logger.info(f"Node '{name}' status changed: {old_status} -> {status}")
+
+            logger.debug(f"Updated node '{name}': status={status}, data={data}")
             self.update()
         else:
             logger.warning(f"Received status for unknown node: {name}")
@@ -241,11 +250,13 @@ class DAGWidget(QtWidgets.QWidget):
             # Check if we clicked on a node
             for name, node in self.nodes.items():
                 if node.contains_point(x, y):
+                    logger.info(f"Selected node: {name}")
                     self.selected_node = name
                     self.update()
                     return
 
             # Otherwise, start dragging
+            logger.debug("Starting graph panning")
             self.dragging = True
             self.last_mouse_pos = (event.x(), event.y())
 
@@ -300,6 +311,8 @@ class MonitorInfoPanel(QtWidgets.QWidget):
 
     def update_info(self, name: str, node: GraphNode):
         """Update the info panel with node details"""
+        logger.debug(f"Updating info panel for node: {name}")
+
         self.title_label.setText(f"Monitor: {name}")
 
         status_names = {
@@ -322,6 +335,10 @@ class MonitorInfoPanel(QtWidgets.QWidget):
             self.timestamp_label.setText(f"Last Update: {time_str}")
         else:
             self.timestamp_label.setText("Last Update: Never")
+
+        logger.info(
+            f"Status: {status_text}, Data: {node.data}, Timestamp: {node.timestamp}"
+        )
 
     def clear_info(self):
         """Clear the info panel"""
@@ -559,6 +576,8 @@ def main():
     parser.add_argument(
         "--dummy-data", action="store_true", help="Load dummy data for testing"
     )
+
+    logging.basicConfig(level=logging.DEBUG)
 
     args = parser.parse_args()
 
