@@ -1,8 +1,16 @@
+import itertools
 import logging
+import math
+import warnings
+from dataclasses import dataclass
+from enum import Enum
 from enum import Flag
 from enum import auto
 from time import time
 from typing import Any
+from typing import Callable
+from typing import Generator
+from typing import Optional
 from typing import Tuple
 from typing import Type
 
@@ -21,11 +29,25 @@ from . import patch_ndscan  # noqa
 logger = logging.getLogger(__name__)
 
 
-NUM_SCAN_POINT = 10
+NUM_SCAN_POINT = 11
 
 
 class CalibrationError(RuntimeError):
     pass
+
+
+@dataclass
+class ParamSpec:
+    name: str
+    min: float
+    max: float
+    handle: FloatParamHandle
+
+
+class OptimizationStrategy(Enum):
+    MAXIMIZE = auto()
+    MINIMIZE = auto()
+    ZERO = auto()
 
 
 class CalibrationResult(int, Flag):
@@ -143,6 +165,7 @@ class Calibration(ExpFragment):
         """
         self.__timeout = 0
         self.__optimizable_params = []
+        self.__optimizer_func = None
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
         self.__most_recent_check_data = None
@@ -565,68 +588,257 @@ class Calibration(ExpFragment):
             raise ValueError(
                 f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
             )
-        elif len(self.__optimizable_params) > 1:
-            raise NotImplementedError(
-                f"Calibration {self.__class__} cannot be optimized because optimizations of >1 params have not yet been implemented"
+
+        if self.__optimizer_func is not None:
+            return self._run_custom_optimizer()
+
+        self._run_grid_search()
+
+    def _run_grid_search(self, num_points: int = NUM_SCAN_POINT) -> None:
+        """Built-in N-dimensional grid search using itertools.product."""
+        param_specs = self.__optimizable_params
+        n_params = len(param_specs)
+
+        n_points = num_points ** n_params
+        if n_points > 500:
+            warnings.warn(
+                f"Grid search will evaluate {n_points} points ({n_params}D × {num_points} points). "
+                "Consider using a custom optimizer for high-dimensional spaces.",
+                UserWarning,
             )
 
-        p_min, p_max, p_handle = self.__optimizable_params[0]
-        p_handle: FloatParamHandle
+        # Build axes: list of linspaces for each parameter
+        axes = [np.linspace(min_v, max_v, num_points) for min_v, max_v, _ in param_specs]
+        names = [handle.name for _, _, handle in param_specs]
 
         logger.debug(
-            "Using default fix_own_state implementation to optimize '%s', previous value %s",
-            p_handle.name,
-            p_handle.get(),
+            "Running grid search over %s parameters: %s",
+            n_params,
+            names,
         )
 
-        points = np.linspace(p_min, p_max, NUM_SCAN_POINT).tolist()
+        # Override all params
+        stores = {}
+        for _, _, handle in param_specs:
+            _, store = self.override_param(handle.name, handle.get())
+            stores[handle.name] = store
 
-        # Override the parameter we're scanning to a new ParamStore
-        _, p_store = self.override_param(p_handle.name, p_min)
-        p_store: FloatParamStore
+        try:
+            best_data = None
+            best_params = None
+            best_status = None
+            best_non_ok_data = None
+            best_non_ok_params = None
 
-        output_status = []
-        output_data = []
+            # Iterate through cartesian product of all parameter axes
+            for point in itertools.product(*axes):
+                params = dict(zip(names, point))
 
-        for point in points:
-            p_store.set_value(point)
-            state, data = self._do_check_own_state()
-            output_status.append(state)
-            output_data.append(data)
+                # Apply parameters
+                for name, value in params.items():
+                    stores[name].set_value(value)
 
-            logger.debug("for %s = %s, measured data = %s", p_handle.name, point, data)
+                # Measure
+                result, data = self._do_check_own_state()
 
+                logger.debug(
+                    "Grid search point %s: result=%s, data=%s",
+                    params,
+                    result,
+                    data,
+                )
+
+                # Track best (only if OK)
+                if result == CalibrationResult.OK:
+                    if self._is_better(data, best_data):
+                        best_data = data
+                        best_params = params.copy()
+                        best_status = result
+                else:
+                    if best_non_ok_data is None or self._is_better(data, best_non_ok_data):
+                        best_non_ok_data = data
+                        best_non_ok_params = params.copy()
+
+            if best_params is None:
+                msg = "No valid parameters found in grid search"
+                if best_non_ok_params is not None:
+                    msg += f". Best non-OK params: {best_non_ok_params}"
+                raise CalibrationError(msg)
+
+            # Save best params to datasets
+            for name, value in best_params.items():
+                self.set_dataset(
+                    self._param_dataset_key_from_name(name),
+                    value,
+                    broadcast=True,
+                    persist=True,
+                )
+
+        finally:
+            # Reset params
+            for _, _, handle in param_specs:
+                self.reset_param(handle.name)
+            self.recompute_param_defaults()
+
+        # Verify: explicitly apply best params before checking
+        if best_params is not None:
+            for name, value in best_params.items():
+                stores[name].set_value(value)
+
+        result, data = self._do_check_own_state()
+        if result != CalibrationResult.OK:
+            raise CalibrationError("Best parameters did not pass check")
+
+    def _run_custom_optimizer(self) -> None:
+        """Run a user-provided optimizer generator."""
+        param_specs = [
+            ParamSpec(name=handle.name, min=min_v, max=max_v, handle=handle)
+            for min_v, max_v, handle in self.__optimizable_params
+        ]
+
+        # Override all params
+        stores = {}
+        for spec in param_specs:
+            _, store = self.override_param(spec.name, spec.handle.get())
+            stores[spec.name] = store
+
+        best_data = None
+        best_params = None
+
+        try:
+            # Instantiate generator
+            optimizer = self.__optimizer_func(param_specs)
+
+            # Prime generator
             try:
-                float(data)
-            except ValueError:
-                raise ValueError("Results %s could not be converted to a float", data)
+                param_dict = next(optimizer)
+            except StopIteration as e:
+                if e.value is not None:
+                    best_params = e.value
+                param_dict = None
 
-        strategy = self.optimization_type.get()
+            # Main loop
+            while param_dict is not None:
+                # Validate
+                self._validate_param_dict(param_dict, param_specs)
 
-        if strategy != "max":
-            # TODO: implement "min" and "zero" strategies
-            raise NotImplementedError("Not done yet")
+                # Apply
+                for name, value in param_dict.items():
+                    stores[name].set_value(value)
 
-        # Set the best param
-        k_max = np.argmax(output_data)
-        best_param_val = points[k_max]
+                # Measure
+                result, data = self._do_check_own_state()
 
-        self.set_dataset(
-            self._param_dataset_key_from_name(p_handle.name),
-            best_param_val,
-            broadcast=True,
-            persist=True,
-        )
+                # Track best
+                if result == CalibrationResult.OK and self._is_better(data, best_data):
+                    best_data = data
+                    best_params = param_dict.copy()
 
-        logger.debug(
-            "Choosing %s=%s and saving in %s",
-            p_handle.name,
-            best_param_val,
-            self._param_dataset_key_from_name(p_handle.name),
-        )
+                # Send result, get next params
+                try:
+                    param_dict = optimizer.send((result, data))
+                except StopIteration as e:
+                    if e.value is not None:
+                        best_params = e.value
+                    param_dict = None
 
-        if output_status[k_max] != CalibrationResult.OK:
-            raise CalibrationError("The best parameters found did not pass the check")
+        except CalibrationError:
+            raise
+        except Exception as e:
+            logger.exception("Optimizer failed")
+            raise CalibrationError(f"Optimizer failed: {e}") from e
 
-        self.reset_param(p_handle.name)
-        self.recompute_param_defaults()
+        finally:
+            # Always cleanup
+            for spec in param_specs:
+                self.reset_param(spec.name)
+            self.recompute_param_defaults()
+
+        # Apply best
+        if best_params is None:
+            raise CalibrationError("No valid parameters found")
+
+        for name, value in best_params.items():
+            self.set_dataset(
+                self._param_dataset_key_from_name(name),
+                value,
+                broadcast=True,
+                persist=True,
+            )
+
+        # Verify
+        if best_params is not None:
+            for name, value in best_params.items():
+                stores[name].set_value(value)
+
+        result, data = self._do_check_own_state()
+        if result != CalibrationResult.OK:
+            raise CalibrationError("Best parameters did not pass check")
+
+    def _validate_param_dict(self, param_dict: dict, param_specs: list[ParamSpec]) -> None:
+        """Validate that yielded parameter dict is well-formed."""
+        expected_names = {spec.name for spec in param_specs}
+        actual_names = set(param_dict.keys())
+
+        if actual_names != expected_names:
+            missing = expected_names - actual_names
+            extra = actual_names - expected_names
+            raise ValueError(f"Invalid parameter dict: missing={missing}, extra={extra}")
+
+        for spec in param_specs:
+            value = param_dict[spec.name]
+            if not isinstance(value, (int, float)):
+                raise TypeError(f"Parameter {spec.name} must be numeric, got {type(value)}")
+            if not (spec.min <= value <= spec.max):
+                raise ValueError(
+                    f"Parameter {spec.name}={value} out of bounds [{spec.min}, {spec.max}]"
+                )
+
+    def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
+        """Compare data value against current best based on optimization strategy."""
+        if best_data is None:
+            return True
+
+        if not isinstance(data, (int, float)):
+            return False
+
+        strategy = self._get_optimization_strategy()
+
+        if strategy == OptimizationStrategy.MAXIMIZE:
+            return data > best_data
+        elif strategy == OptimizationStrategy.MINIMIZE:
+            return data < best_data
+        elif strategy == OptimizationStrategy.ZERO:
+            return abs(data) < abs(best_data)
+        else:
+            raise ValueError(f"Unknown optimization strategy: {strategy}")
+
+    def _get_optimization_strategy(self) -> OptimizationStrategy:
+        """Map legacy string optimization_type to OptimizationStrategy enum."""
+        strategy_str = self.optimization_type.get()
+
+        if strategy_str == "max":
+            return OptimizationStrategy.MAXIMIZE
+        elif strategy_str == "min":
+            return OptimizationStrategy.MINIMIZE
+        elif strategy_str == "zero":
+            return OptimizationStrategy.ZERO
+        else:
+            raise ValueError(f"Unknown optimization_type: {strategy_str}")
+
+    def set_optimizer(
+        self,
+        optimizer_func: Callable[[list[ParamSpec]], Generator[dict, tuple[CalibrationResult, Any], Optional[dict]]]
+    ) -> None:
+        """
+        Set a custom optimizer for this Calibration.
+
+        Can only be called during build_calibration().
+
+        Args:
+            optimizer_func: A generator function that yields param dicts and receives (result, data)
+        """
+        if not self.__in_build_calibration:
+            raise TypeError("This method must only be called in build_calibration()")
+
+        self.__optimizer_func = optimizer_func
