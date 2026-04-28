@@ -591,15 +591,15 @@ class Calibration(ExpFragment):
 
         if self.__optimizer_func is not None:
             return self._run_custom_optimizer()
-
-        self._run_grid_search()
+        else:
+            self._run_grid_search()
 
     def _run_grid_search(self, num_points: int = NUM_SCAN_POINT) -> None:
         """Built-in N-dimensional grid search using itertools.product."""
         param_specs = self.__optimizable_params
         n_params = len(param_specs)
 
-        n_points = num_points ** n_params
+        n_points = num_points**n_params
         if n_points > 500:
             warnings.warn(
                 f"Grid search will evaluate {n_points} points ({n_params}D × {num_points} points). "
@@ -608,7 +608,9 @@ class Calibration(ExpFragment):
             )
 
         # Build axes: list of linspaces for each parameter
-        axes = [np.linspace(min_v, max_v, num_points) for min_v, max_v, _ in param_specs]
+        axes = [
+            np.linspace(min_v, max_v, num_points) for min_v, max_v, _ in param_specs
+        ]
         names = [handle.name for _, _, handle in param_specs]
 
         logger.debug(
@@ -655,7 +657,9 @@ class Calibration(ExpFragment):
                         best_params = params.copy()
                         best_status = result
                 else:
-                    if best_non_ok_data is None or self._is_better(data, best_non_ok_data):
+                    if best_non_ok_data is None or self._is_better(
+                        data, best_non_ok_data
+                    ):
                         best_non_ok_data = data
                         best_non_ok_params = params.copy()
 
@@ -775,7 +779,9 @@ class Calibration(ExpFragment):
         if result != CalibrationResult.OK:
             raise CalibrationError("Best parameters did not pass check")
 
-    def _validate_param_dict(self, param_dict: dict, param_specs: list[ParamSpec]) -> None:
+    def _validate_param_dict(
+        self, param_dict: dict, param_specs: list[ParamSpec]
+    ) -> None:
         """Validate that yielded parameter dict is well-formed."""
         expected_names = {spec.name for spec in param_specs}
         actual_names = set(param_dict.keys())
@@ -783,12 +789,16 @@ class Calibration(ExpFragment):
         if actual_names != expected_names:
             missing = expected_names - actual_names
             extra = actual_names - expected_names
-            raise ValueError(f"Invalid parameter dict: missing={missing}, extra={extra}")
+            raise ValueError(
+                f"Invalid parameter dict: missing={missing}, extra={extra}"
+            )
 
         for spec in param_specs:
             value = param_dict[spec.name]
             if not isinstance(value, (int, float)):
-                raise TypeError(f"Parameter {spec.name} must be numeric, got {type(value)}")
+                raise TypeError(
+                    f"Parameter {spec.name} must be numeric, got {type(value)}"
+                )
             if not (spec.min <= value <= spec.max):
                 raise ValueError(
                     f"Parameter {spec.name}={value} out of bounds [{spec.min}, {spec.max}]"
@@ -828,7 +838,10 @@ class Calibration(ExpFragment):
 
     def set_optimizer(
         self,
-        optimizer_func: Callable[[list[ParamSpec]], Generator[dict, tuple[CalibrationResult, Any], Optional[dict]]]
+        optimizer_func: Callable[
+            [list[ParamSpec]],
+            Generator[dict, tuple[CalibrationResult, Any], Optional[dict]],
+        ],
     ) -> None:
         """
         Set a custom optimizer for this Calibration.
