@@ -1,7 +1,4 @@
-import itertools
 import logging
-import warnings
-from dataclasses import dataclass
 from enum import Flag
 from enum import auto
 from time import time
@@ -12,53 +9,22 @@ from typing import Optional
 from typing import Tuple
 from typing import Type
 
-import numpy as np
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
-from ndscan.experiment.parameters import FloatParamHandle
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
 
 from . import dag
 from . import patch_ndscan  # noqa
+from .optimizers import ParamSpec
+from .optimizers import grid_search_optimizer
 
 logger = logging.getLogger(__name__)
 
 
-NUM_SCAN_POINT = 11
-
-
 class CalibrationError(RuntimeError):
     pass
-
-
-@dataclass
-class ParamSpec:
-    name: str
-    min: float
-    max: float
-    handle: FloatParamHandle
-
-
-def _grid_search_optimizer(param_specs, num_points=NUM_SCAN_POINT):
-    """Built-in N-dimensional grid search optimizer."""
-    n_params = len(param_specs)
-    n_points = num_points**n_params
-    if n_points > 500:
-        warnings.warn(
-            f"Grid search will evaluate {n_points} points ({n_params}D × {num_points} points). "
-            "Consider using a custom optimizer for high-dimensional spaces.",
-            UserWarning,
-        )
-
-    axes = [np.linspace(spec.min, spec.max, num_points) for spec in param_specs]
-    names = [spec.name for spec in param_specs]
-
-    logger.debug("Running grid search over %s parameters: %s", n_params, names)
-
-    for point in itertools.product(*axes):
-        yield dict(zip(names, point))
 
 
 class CalibrationResult(int, Flag):
@@ -176,7 +142,7 @@ class Calibration(ExpFragment):
         """
         self.__timeout = 0
         self.__optimizable_params = []
-        self.__optimizer_func = None
+        self.__optimizer_func = grid_search_optimizer  # Default optimizer, can be overridden by set_optimizer()
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
         self.__most_recent_check_data = None
@@ -602,7 +568,7 @@ class Calibration(ExpFragment):
                 f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
             )
 
-        self._run_optimizer(self.__optimizer_func or _grid_search_optimizer)
+        self._run_optimizer(self.__optimizer_func)
 
     def _run_optimizer(self, optimizer_func) -> None:
         """Run an optimizer generator against this Calibration's parameters."""
