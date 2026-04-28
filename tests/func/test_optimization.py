@@ -168,3 +168,66 @@ def test_grid_search_2d_min(fragment_factory):
     assert c.check_state()[0] == CalibrationResult.OK
     assert abs(c.x.get() - center_x) < 0.15
     assert abs(c.y.get() - center_y) < 0.15
+
+
+def test_grid_search_3d_max(fragment_factory):
+    center_x, center_y, center_z = 0.3, -0.2, 0.4
+    sigma = 0.5
+
+    class Gaussian3DMax(Calibration):
+        def build_calibration(self):
+            self.setattr_param_optimizable("x", "X", -1, 1, default=0.0)
+            self.setattr_param_optimizable("y", "Y", -1, 1, default=0.0)
+            self.setattr_param_optimizable("z", "Z", -1, 1, default=0.0)
+            self.set_optimization_type("max")
+
+        def check_own_state(self):
+            x = self.x.get()
+            y = self.y.get()
+            z = self.z.get()
+            g = np.exp(
+                -((x - center_x) ** 2 + (y - center_y) ** 2 + (z - center_z) ** 2)
+                / (2 * sigma**2)
+            )
+            return CalibrationResult.OK, g
+
+    c = fragment_factory(Gaussian3DMax)
+    c.fix_state(force=True)
+
+    assert c.check_state()[0] == CalibrationResult.OK
+    assert abs(c.x.get() - center_x) < 0.15
+    assert abs(c.y.get() - center_y) < 0.15
+    assert abs(c.z.get() - center_z) < 0.15
+
+
+def test_grid_search_4d_max(fragment_factory):
+    center = (0.3, -0.2, 0.4, -0.1)
+    sigma = 0.5
+
+    class Gaussian4DMax(Calibration):
+        def build_calibration(self):
+            self.setattr_param_optimizable("x", "X", -1, 1, default=0.0)
+            self.setattr_param_optimizable("y", "Y", -1, 1, default=0.0)
+            self.setattr_param_optimizable("z", "Z", -1, 1, default=0.0)
+            self.setattr_param_optimizable("w", "W", -1, 1, default=0.0)
+            self.set_optimization_type("max")
+
+        def check_own_state(self):
+            vals = (self.x.get(), self.y.get(), self.z.get(), self.w.get())
+            g = np.exp(
+                -sum((v - c) ** 2 for v, c in zip(vals, center)) / (2 * sigma**2)
+            )
+            return CalibrationResult.OK, g
+
+    import warnings
+
+    c = fragment_factory(Gaussian4DMax)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        c.fix_state(force=True)
+
+    assert c.check_state()[0] == CalibrationResult.OK
+    assert abs(c.x.get() - center[0]) < 0.15
+    assert abs(c.y.get() - center[1]) < 0.15
+    assert abs(c.z.get() - center[2]) < 0.15
+    assert abs(c.w.get() - center[3]) < 0.15
