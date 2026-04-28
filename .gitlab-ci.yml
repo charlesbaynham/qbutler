@@ -1,139 +1,87 @@
 # Default image, if not specified
-image: "nixpkgs/nix-flakes"
+image: python:3.11
 
 stages:
-  - Static Analysis
-  - Build
-  - Test
-  - Full test
-  - Compile Documentation
-  - Build Documentation
-
-.deps:
-  before_script:
-    # Store the CI_JOB_TOKEN so that jobs can access other repositories with the access rights of the triggering user:
-    - echo -e "machine ${CI_SERVER_HOST}\nlogin gitlab-ci-token\npassword ${CI_JOB_TOKEN}" > ~/.netrc
-    # Set up git so that test commits don't fail
-    - echo [user] > ~/.gitconfig
-    - echo name = Gitlabs CI Testing >> ~/.gitconfig
-    - echo email = test@example.com >> ~/.gitconfig
-    # Install cachix
-    - nix profile install nixpkgs/nixos-22.11#cachix
-    # If a Cachix cache was passed, use it
-    - if [ ! -z '$CACHIX_CACHE_NAME' ]; then cachix use $CACHIX_CACHE_NAME; fi
+- Static Analysis
+- Test
+- Build Release
+- Publish Pages
 
 cache:
   key: ${CI_JOB_NAME}
   paths:
-    - .cache
+  - .venv
+  - .pipcache
+
+variables:
+  # Change pip's cache directory to be inside the project directory since we can only cache local items.
+  PIP_CACHE_DIR: $CI_PROJECT_DIR/.pipcache
+
+# Make a template for steps that use a python virtual env
+.py_venv:
+  before_script:
+    # Store the CI_JOB_TOKEN so that jobs can access other repositories with the access rights of the triggering user:
+  - echo -e "machine ${CI_SERVER_HOST}\nlogin gitlab-ci-token\npassword ${CI_JOB_TOKEN}" > ~/.netrc
+    # Set up git so that test commits don't fail
+  - echo [user] > ~/.gitconfig
+  - echo name = Gitlabs CI Testing >> ~/.gitconfig
+  - echo email = test@example.com >> ~/.gitconfig
+  - python --version
+  - pip install poetry
+  - poetry config virtualenvs.in-project true
+  - poetry install
 
 ### Linting ###
 
 pre-commit:
-  image: python:3.9
+  extends: .py_venv
   stage: Static Analysis
-  variables:
-    PRE_COMMIT_HOME: ${CI_PROJECT_DIR}/.cache/pre-commit
   script:
-    - pip install pre-commit
-    - pre-commit run --all
+  - poetry run pre-commit run --all
   allow_failure: true
   needs: []
 
-check-requirements:
-  extends: .deps
-  stage: Static Analysis
+### Testing ###
+
+test:
+  extends: .py_venv
+  stage: Test
   script:
-    - nix run .#update_requirements
-    - git diff --exit-code  # Fail here if the generated requirements differ from the currently pinned ones
+  - poetry run pytest --runslow
   needs: []
 
-### Builder ###
-
-# If the environmental variables CACHIX_CACHE_NAME and CACHIX_AUTH_TOKEN are set,
-# build the package and the devShell and push the results to cachix
-nix_build:
-  extends: .deps
-  needs: []
-  stage: "Build"
-  rules:
-    - if: $CACHIX_CACHE_NAME && $CACHIX_AUTH_TOKEN && $CI_PIPELINE_SOURCE == "push"
-  script:
-    - cachix use "$CACHIX_CACHE_NAME"
-    - cachix watch-exec $CACHIX_CACHE_NAME -- nix build --no-link .
-    - cachix watch-exec $CACHIX_CACHE_NAME -- nix develop -c echo Build complete
-
-### Tests ###
-
-pytest:
-  extends: .deps
-  stage: "Test"
-  script:
-    - nix run .#pytest -- --runslow
-  coverage: '/^TOTAL.+?(\d+\%)$/'
-  needs: []
-  artifacts:
-    when: always
-    reports:
-      junit: report.xml
-
+### Build for release if it's tagged ###
+# TODO: reinstate PyPI uploads one day
+# build:
+#   stage: Build Release
+#   extends: .py_venv
+#   script:
+#   - poetry build
+#   - export TWINE_USERNAME=__token__
+#   - poetry run twine upload dist/*
+#   artifacts:
+#     paths:
+#     - build.tar.gz
+#     expire_in: 1000 yrs
+#   rules:
+#   - if: $CI_COMMIT_TAG
+#     when: always
+#   needs: []
 
 ### Documentation ###
 
-# Build the documentation
-make_docs:
-  extends: .deps
-  stage: Compile Documentation
+# Upload the documentation to pages if it's a tagged commit
+pages:
+  extends: .py_venv
+  stage: Publish Pages
   needs: []
   script:
-    - nix build .#docs_html
-    - mkdir html_out && cp -r result/* html_out/.
-    - nix build .#docs_latex
-    - mkdir latex && cp -r result/* latex/.
-
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "master"'
-      when: always
-    - if: $CI_COMMIT_TAG
-
-  artifacts:
-    paths:
-    - latex
-    - html_out
-    expire_in: 1 hour
-
-# Build a pdf
-pdf_compile:
-  needs: ["make_docs"]
-  stage: Build Documentation
-  image:  charlesbaynham/ctanfull
-  # Only build a pdf on the master branch or on tagged commits
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "master"'
-      when: always
-    - if: $CI_COMMIT_TAG
-  artifacts:
-    paths:
-    - "*.pdf"
-    name: ${CI_COMMIT_REF_SLUG}_manual.pdf
-  script:
-    - cd latex
-    - make
-    - cp *.pdf ..
-
-# Upload the documentation to pages if we're on the master branch
-pages:
-  image: alpine  # Just for speed
-  stage: Build Documentation
-  needs: ["make_docs"]
-  script:
-    - cp -r html_out public
+  - poetry run sphinx-build docs public -b html
   artifacts:
     paths:
     - public
-    - html_out
   rules:
-    - if: '$CI_COMMIT_BRANCH == "master"'
-      when: always
-    - if: $CI_COMMIT_TAG
-      when: always
+  - if: $CI_COMMIT_TAG
+    when: always
+  - if: $CI_COMMIT_BRANCH == "master"
+    when: always

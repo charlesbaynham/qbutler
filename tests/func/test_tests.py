@@ -1,12 +1,9 @@
 """Tests for the (Env)Experiment-facing dataset interface."""
-import copy
-import unittest
 
 from artiq.experiment import EnvExperiment
 from artiq.master.worker_db import DatasetManager
 from pytest import fixture
 from pytest import raises
-from sipyco.sync_struct import process_mod
 
 
 class DatasetExperiment(EnvExperiment):

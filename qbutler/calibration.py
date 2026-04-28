@@ -1,27 +1,26 @@
 import logging
-from enum import auto
 from enum import Flag
+from enum import auto
 from time import time
 from typing import Any
+from typing import Callable
+from typing import Generator
+from typing import Optional
 from typing import Tuple
 from typing import Type
 
-import numpy as np
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
-from ndscan.experiment.parameters import FloatParamHandle
-from ndscan.experiment.parameters import FloatParamStore
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
 
 from . import dag
 from . import patch_ndscan  # noqa
+from .optimizers import ParamSpec
+from .optimizers import grid_search_optimizer
 
 logger = logging.getLogger(__name__)
-
-
-NUM_SCAN_POINT = 10
 
 
 class CalibrationError(RuntimeError):
@@ -143,6 +142,7 @@ class Calibration(ExpFragment):
         """
         self.__timeout = 0
         self.__optimizable_params = []
+        self.__optimizer_func = grid_search_optimizer  # Default optimizer, can be overridden by set_optimizer()
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
         self.__most_recent_check_data = None
@@ -246,7 +246,9 @@ class Calibration(ExpFragment):
             *args,
             **kwargs,
         )
-        self.__optimizable_params.append((min, max, p))
+        self.__optimizable_params.append(
+            ParamSpec(name=name, min=min, max=max, handle=p)
+        )
         return p
 
     def set_optimization_type(self, optimization_type: str) -> None:
@@ -565,68 +567,112 @@ class Calibration(ExpFragment):
             raise ValueError(
                 f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
             )
-        elif len(self.__optimizable_params) > 1:
-            raise NotImplementedError(
-                f"Calibration {self.__class__} cannot be optimized because optimizations of >1 params have not yet been implemented"
-            )
 
-        p_min, p_max, p_handle = self.__optimizable_params[0]
-        p_handle: FloatParamHandle
+        self._run_optimizer(self.__optimizer_func)
 
-        logger.debug(
-            "Using default fix_own_state implementation to optimize '%s', previous value %s",
-            p_handle.name,
-            p_handle.get(),
-        )
+    def _run_optimizer(self, optimizer_func) -> None:
+        """Run an optimizer generator against this Calibration's parameters."""
+        param_specs = self.__optimizable_params
 
-        points = np.linspace(p_min, p_max, NUM_SCAN_POINT).tolist()
+        stores = {}
+        for spec in param_specs:
+            _, store = self.override_param(spec.name, spec.handle.get())
+            stores[spec.name] = store
 
-        # Override the parameter we're scanning to a new ParamStore
-        _, p_store = self.override_param(p_handle.name, p_min)
-        p_store: FloatParamStore
+        best_data = None
+        best_params = None
 
-        output_status = []
-        output_data = []
-
-        for point in points:
-            p_store.set_value(point)
-            state, data = self._do_check_own_state()
-            output_status.append(state)
-            output_data.append(data)
-
-            logger.debug("for %s = %s, measured data = %s", p_handle.name, point, data)
+        try:
+            optimizer = optimizer_func(param_specs)
 
             try:
-                float(data)
-            except ValueError:
-                raise ValueError("Results %s could not be converted to a float", data)
+                param_dict = next(optimizer)
+            except StopIteration as e:
+                if e.value is not None:
+                    best_params = e.value
+                param_dict = None
+
+            while param_dict is not None:
+                for name, value in param_dict.items():
+                    stores[name].set_value(value)
+
+                result, data = self._do_check_own_state()
+
+                logger.debug(
+                    "Optimizer point %s: result=%s, data=%s", param_dict, result, data
+                )
+
+                if result == CalibrationResult.OK and self._is_better(data, best_data):
+                    best_data = data
+                    best_params = param_dict.copy()
+
+                try:
+                    param_dict = optimizer.send((result, data))
+                except StopIteration as e:
+                    if e.value is not None:
+                        best_params = e.value
+                    param_dict = None
+
+            if best_params is None:
+                raise CalibrationError("No valid parameters found")
+
+            for name, value in best_params.items():
+                self.set_dataset(
+                    self._param_dataset_key_from_name(name),
+                    value,
+                    broadcast=True,
+                    persist=True,
+                )
+
+            # Verify with best params still applied
+            for name, value in best_params.items():
+                stores[name].set_value(value)
+
+            result, data = self._do_check_own_state()
+            if result != CalibrationResult.OK:
+                raise CalibrationError("Best parameters did not pass check")
+
+        finally:
+            for spec in param_specs:
+                self.reset_param(spec.name)
+            self.recompute_param_defaults()
+
+    def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
+        """Compare data value against current best based on optimization strategy."""
+        if best_data is None:
+            return True
+
+        if not isinstance(data, (int, float)):
+            return False
 
         strategy = self.optimization_type.get()
+        if strategy == "max":
+            return data > best_data
+        elif strategy == "min":
+            return data < best_data
+        elif strategy == "zero":
+            return abs(data) < abs(best_data)
+        else:
+            raise ValueError(f"Unknown optimization_type: {strategy}")
 
-        if strategy != "max":
-            # TODO: implement "min" and "zero" strategies
-            raise NotImplementedError("Not done yet")
+    def set_optimizer(
+        self,
+        optimizer_func: Callable[
+            [list[ParamSpec]],
+            Generator[dict, tuple[CalibrationResult, Any], Optional[dict]],
+        ],
+    ) -> None:
+        """
+        Set a custom optimizer for this Calibration.
 
-        # Set the best param
-        k_max = np.argmax(output_data)
-        best_param_val = points[k_max]
+        Can only be called during build_calibration(). The optimizer func will
+        be called on the host, not the core, so can use fancy python features.
 
-        self.set_dataset(
-            self._param_dataset_key_from_name(p_handle.name),
-            best_param_val,
-            broadcast=True,
-            persist=True,
-        )
+        Args:
+            optimizer_func: A generator function that yields param dicts and
+            receives (result, data)
+        """
+        if not self.__in_build_calibration:
+            raise TypeError("This method must only be called in build_calibration()")
 
-        logger.debug(
-            "Choosing %s=%s and saving in %s",
-            p_handle.name,
-            best_param_val,
-            self._param_dataset_key_from_name(p_handle.name),
-        )
-
-        if output_status[k_max] != CalibrationResult.OK:
-            raise CalibrationError("The best parameters found did not pass the check")
-
-        self.reset_param(p_handle.name)
-        self.recompute_param_defaults()
+        self.__optimizer_func = optimizer_func
