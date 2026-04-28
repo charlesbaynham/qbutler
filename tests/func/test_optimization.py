@@ -135,7 +135,7 @@ def test_grid_search_2d_max(fragment_factory):
         def check_own_state(self):
             x = self.x.get()
             y = self.y.get()
-            g = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
+            g = np.exp(-((x - center_x) ** 2 + (y - center_y) ** 2) / (2 * sigma**2))
             return CalibrationResult.OK, g
 
     c = fragment_factory(Gaussian2DMax)
@@ -159,7 +159,7 @@ def test_grid_search_2d_min(fragment_factory):
         def check_own_state(self):
             x = self.x.get()
             y = self.y.get()
-            g = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
+            g = np.exp(-((x - center_x) ** 2 + (y - center_y) ** 2) / (2 * sigma**2))
             return CalibrationResult.OK, 1.0 - g
 
     c = fragment_factory(Gaussian2DMin)
