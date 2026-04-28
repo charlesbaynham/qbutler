@@ -1,7 +1,6 @@
 import itertools
 import logging
 import warnings
-from dataclasses import dataclass
 from enum import Flag
 from enum import auto
 from time import time
@@ -22,6 +21,13 @@ from ndscan.experiment.parameters import StringParam
 
 from . import dag
 from . import patch_ndscan  # noqa
+
+try:
+    # If pydantic is available, use it for validation
+    from pydantic.dataclasses import dataclass
+except ImportError:
+    from dataclasses import dataclass
+
 
 logger = logging.getLogger(__name__)
 
