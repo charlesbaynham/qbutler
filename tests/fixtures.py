@@ -6,11 +6,14 @@ import textwrap
 from pathlib import Path
 from typing import Callable
 from typing import Type
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 import numpy
+from artiq.coredevice.core import Core
 from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
+from artiq.experiment import rpc
 from artiq.language.environment import ProcessArgumentManager
 from artiq.master.worker_db import DatasetManager
 from artiq.master.worker_db import DeviceManager
@@ -101,20 +104,24 @@ def plot_graph(tmp_path):
 
 
 @fixture
-def mock_core():
-    return Mock()
-
-
-@fixture
 def mock_db_writer():
     return Mock()
 
 
 @fixture
-def device_mgr(mock_core, mock_db_writer):
+def device_mgr(mock_db_writer):
+    mock_device_db = {
+        "core": {
+            "type": "local",
+            "module": "artiq.coredevice.core",
+            "class": "Core",
+            "arguments": {"host": None, "ref_period": 1e-9},
+        }
+    }
+
     class DummyDeviceDB:
-        def __init__(self):
-            self.data = Notifier({})
+        def __init__(self, device_db):
+            self.data = Notifier(device_db)
 
         def scan(self):
             pass
@@ -173,15 +180,57 @@ def device_mgr(mock_core, mock_db_writer):
                 "CCB for service '%s' (args %s, kwargs %s)", service, args, kwargs
             )
 
-    return DeviceManager(
-        DummyDeviceDB(),
+    class DeviceManagerWithOverride(DeviceManager):
+        # Add an "override" method to DeviceManger which lets us replace a
+        # device with our own object
+        def override_device(self, key, obj):
+            self.close_devices()
+            self.virtual_devices[key] = obj
+
+    # Build the device manager with our dummy services
+    mgr = DeviceManagerWithOverride(
+        DummyDeviceDB(mock_device_db),
         virtual_devices={
             "scheduler": DummyScheduler(),
             "ccb": DummyCCB(),
-            "core": mock_core,
             "mock_db_writer": mock_db_writer,
         },
     )
+
+    # Replace the Core.run() method (not CommKernel.run()) so that we return
+    # Mocks from kernels
+    def replacement_run(self, function, args, kwargs):
+        result = None
+
+        @rpc(flags={"async"})
+        def set_result(new_result):
+            nonlocal result
+            result = new_result
+
+        embedding_map, kernel_library, symbolizer, demangler = self.compile(
+            function, args, kwargs, set_result
+        )
+        self._run_compiled(kernel_library, embedding_map, symbolizer, demangler)
+
+        return MagicMock()
+
+    Core.run = replacement_run
+
+    # Replace the "run()" method of the mocked core's CommKernel with a Mock
+    # object so we can keep track of calls to it
+    dummy_core: Core = mgr.get("core")
+    dummy_core.comm.run = Mock()
+
+    return mgr
+
+
+@fixture
+def mock_core(device_mgr):
+    """Returns a mock object that replaced the core's CommKernel.run() method
+
+    This can be used to keep track of the number of times a kernel has been executed
+    """
+    return device_mgr.get("core").comm.run
 
 
 @fixture(scope="session", autouse=True)
