@@ -1,6 +1,7 @@
 import copy
 import inspect
 import logging
+import os
 import random as rand
 import textwrap
 from pathlib import Path
@@ -110,14 +111,28 @@ def mock_db_writer():
 
 @fixture
 def device_mgr(mock_db_writer):
-    mock_device_db = {
-        "core": {
-            "type": "local",
-            "module": "artiq.coredevice.core",
-            "class": "Core",
-            "arguments": {"host": None, "ref_period": 1e-9},
+    libartiq_emulator = os.getenv("LIBARTIQ_EMULATOR")
+    if libartiq_emulator:
+        mock_device_db = {
+            "core": {
+                "type": "local",
+                "module": "artiq.coredevice.core",
+                "class": "CoreEmulator",
+                "arguments": {
+                    "libartiq_emulator_path": libartiq_emulator,
+                    "ref_period": 1e-9,
+                },
+            }
         }
-    }
+    else:
+        mock_device_db = {
+            "core": {
+                "type": "local",
+                "module": "artiq.coredevice.core",
+                "class": "Core",
+                "arguments": {"host": None, "ref_period": 1e-9},
+            }
+        }
 
     class DummyDeviceDB:
         def __init__(self, device_db):
@@ -197,29 +212,36 @@ def device_mgr(mock_db_writer):
         },
     )
 
-    # Replace the Core.run() method (not CommKernel.run()) so that we return
-    # Mocks from kernels
-    def replacement_run(self, function, args, kwargs):
-        result = None
-
-        @rpc(flags={"async"})
-        def set_result(new_result):
-            nonlocal result
-            result = new_result
-
-        embedding_map, kernel_library, symbolizer, demangler = self.compile(
-            function, args, kwargs, set_result
-        )
-        self._run_compiled(kernel_library, embedding_map, symbolizer, demangler)
-
-        return MagicMock()
-
-    Core.run = replacement_run
-
-    # Replace the "run()" method of the mocked core's CommKernel with a Mock
-    # object so we can keep track of calls to it
     dummy_core: Core = mgr.get("core")
-    dummy_core.comm.run = Mock()
+
+    if libartiq_emulator:
+        # With the emulator, wrap comm.run with a Mock that delegates to the
+        # real implementation so tests can track kernel calls.
+        _original_comm_run = dummy_core.comm.run
+        dummy_core.comm.run = Mock(side_effect=_original_comm_run)
+    else:
+        # Without the emulator, replace Core.run to compile but not execute
+        # kernels (comm is CommKernelDummy). We still need to return the
+        # compiled result properly for ARTIQ 8+.
+        def replacement_run(self, function, args, kwargs):
+            result = None
+
+            @rpc(flags={"async"})
+            def set_result(new_result):
+                nonlocal result
+                result = new_result
+
+            compile_result = self.compile(function, args, kwargs, set_result)
+            embedding_map = compile_result[0]
+            kernel_library = compile_result[1]
+            symbolizer = compile_result[2]
+            demangler = compile_result[3]
+            self._run_compiled(kernel_library, embedding_map, symbolizer, demangler)
+
+            return MagicMock()
+
+        Core.run = replacement_run
+        dummy_core.comm.run = Mock()
 
     return mgr
 
