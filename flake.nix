@@ -39,9 +39,7 @@
         name = "ndscan";
         src = src-ndscan;
         format = "pyproject";
-        nativeBuildInputs = with nixpkgs.python3Packages; [
-          hatchling
-        ];
+        nativeBuildInputs = with nixpkgs.python3Packages; [ hatchling ];
         propagatedBuildInputs = with nixpkgs.python3Packages; [
           artiqpkg
           h5py
@@ -52,19 +50,21 @@
         dontWrapQtApps = true;
       };
 
-      qbutler-test-deps = with nixpkgs.python3Packages; [
-        pytest
-        black
-        isort
-        nixfmt
-        numpy
-        networkx
-        matplotlib
-      ];
+      pythonEnv = nixpkgs.python3.withPackages (ps: [
+        artiqpkg
+        ndscan
+        oitg
+        ps.pytest
+        ps.black
+        ps.isort
+        ps.numpy
+        ps.networkx
+        ps.matplotlib
+      ]);
     in {
       devShells.x86_64-linux.default = nixpkgs.mkShell {
         name = "qbutler-unit-test-shell";
-        buildInputs = [ artiqpkg libartiq-emulator ndscan oitg ] ++ qbutler-test-deps;
+        buildInputs = [ pythonEnv libartiq-emulator nixpkgs.nixfmt ];
         shellHook = ''
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           export LIBARTIQ_EMULATOR=${libartiq-emulator}/lib/libartiq_emulator.so
