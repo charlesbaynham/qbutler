@@ -9,11 +9,16 @@ from typing import Optional
 from typing import Tuple
 from typing import Type
 
+from artiq.experiment import kernel
+from artiq.experiment import rpc
+from artiq.language import TFloat
+from artiq.language import TList
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
+from ndscan.experiment.utils import is_kernel
 
 from . import dag
 from . import patch_ndscan  # noqa
@@ -579,6 +584,13 @@ class Calibration(ExpFragment):
             _, store = self.override_param(spec.name, spec.handle.get())
             stores[spec.name] = store
 
+        if is_kernel(self.check_own_state):
+            self._run_optimizer_kernel(optimizer_func, param_specs, stores)
+        else:
+            self._run_optimizer_host(optimizer_func, param_specs, stores)
+
+    def _run_optimizer_host(self, optimizer_func, param_specs, stores) -> None:
+        """Host-side optimizer loop."""
         best_data = None
         best_params = None
 
@@ -636,6 +648,114 @@ class Calibration(ExpFragment):
             for spec in param_specs:
                 self.reset_param(spec.name)
             self.recompute_param_defaults()
+
+    def _run_optimizer_kernel(self, optimizer_func, param_specs, stores) -> None:
+        """Kernel-side optimizer loop.
+
+        When check_own_state is a kernel, we run the entire optimization in a
+        single kernel call to avoid expensive host->kernel round trips. The
+        optimizer generator itself runs on the host, communicating with the
+        kernel via RPC.
+        """
+        self._kernel_opt_generator = optimizer_func(param_specs)
+        self._kernel_opt_num_params = len(param_specs)
+        self._kernel_opt_stores = list(stores.values())
+        self._kernel_opt_best_params = [0.0] * len(param_specs)
+        self._kernel_opt_best_data = None
+
+        try:
+            try:
+                params = next(self._kernel_opt_generator)
+                self._kernel_opt_current_params = [
+                    params[spec.name] for spec in param_specs
+                ]
+            except StopIteration:
+                raise CalibrationError("No valid parameters found")
+
+            # Run the kernel optimization loop (single kernel call)
+            self._run_optimizer_kernel_loop()
+
+            if self._kernel_opt_best_data is None:
+                raise CalibrationError("No valid parameters found")
+
+            # Apply best params and save to datasets
+            for spec, value in zip(param_specs, self._kernel_opt_best_params):
+                self.set_dataset(
+                    self._param_dataset_key_from_name(spec.name),
+                    value,
+                    broadcast=True,
+                    persist=True,
+                )
+                stores[spec.name].set_value(value)
+
+        finally:
+            for attr in [
+                "_kernel_opt_generator",
+                "_kernel_opt_num_params",
+                "_kernel_opt_stores",
+                "_kernel_opt_best_params",
+                "_kernel_opt_best_data",
+                "_kernel_opt_current_params",
+            ]:
+                if hasattr(self, attr):
+                    delattr(self, attr)
+            for spec in param_specs:
+                self.reset_param(spec.name)
+            self.recompute_param_defaults()
+
+    @kernel
+    def _run_optimizer_kernel_loop(self):
+        """Kernel loop that applies params and calls check_own_state.
+
+        This method is called once from the host. All optimizer iterations
+        happen inside this single kernel call, with the host generator
+        advanced via RPC.
+        """
+        values = self._kernel_opt_current_params
+
+        while len(values) > 0:
+            # Apply params
+            for i in range(self._kernel_opt_num_params):
+                self._kernel_opt_stores[i].set_from_rpc(values[i])
+
+            # Check state (kernel-to-kernel, cheap)
+            result, data = self.check_own_state()
+
+            # Get next params from host optimizer
+            values = self._kernel_opt_next_rpc_send(result, data)
+
+        # Apply best params for final verification
+        best_values = self._kernel_opt_get_best_rpc()
+        for i in range(self._kernel_opt_num_params):
+            self._kernel_opt_stores[i].set_from_rpc(best_values[i])
+
+        result, data = self.check_own_state()
+        if result != CalibrationResult.OK:
+            raise CalibrationError("Best parameters did not pass check")
+
+    @rpc
+    def _kernel_opt_next_rpc_send(self, result, data) -> TList(TFloat):
+        """Host RPC: advance optimizer and return next param values."""
+        if (
+            result == CalibrationResult.OK
+            and self._is_better(data, self._kernel_opt_best_data)
+        ):
+            self._kernel_opt_best_data = data
+            self._kernel_opt_best_params = list(self._kernel_opt_current_params)
+
+        try:
+            params = self._kernel_opt_generator.send((result, data))
+            self._kernel_opt_current_params = [
+                params[spec.name] for spec in self.__optimizable_params
+            ]
+            return self._kernel_opt_current_params
+        except StopIteration:
+            return []
+
+    @rpc
+    def _kernel_opt_get_best_rpc(self) -> TList(TFloat):
+        """Host RPC: return the best param values found so far."""
+        return self._kernel_opt_best_params
 
     def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
         """Compare data value against current best based on optimization strategy."""
