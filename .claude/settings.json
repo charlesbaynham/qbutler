@@ -7,10 +7,26 @@
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/clone-deps.sh"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
-        "tool": "Read",
-        "command": "bash .claude/clone-deps.sh"
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "black {{filePath}} && isort --profile black --force-single-line-imports {{filePath}}"
+          }
+        ]
       }
     ]
   }

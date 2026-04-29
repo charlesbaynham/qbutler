@@ -54,6 +54,9 @@
 
       qbutler-test-deps = with nixpkgs.python3Packages; [
         pytest
+        black
+        isort
+        nixfmt
         numpy
         networkx
         matplotlib

@@ -85,6 +85,9 @@ def experiment_factory(
 @fixture
 def plot_graph(tmp_path):
     def func(name=None):
+        import matplotlib
+
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import networkx as nx
 
