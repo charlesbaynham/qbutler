@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git ls-tree *)",
+      "Bash(git checkout *)",
+      "Bash(git rm *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "tool": "Read",
+        "command": "bash .claude/clone-deps.sh"
+      }
+    ]
+  }
+}
