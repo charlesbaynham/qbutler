@@ -278,7 +278,9 @@ def artiq_master(tmp_path: Path):
     """
 
     import os
+    import socket
     import subprocess as sp
+    import time
 
     print(tmp_path)
 
@@ -307,6 +309,19 @@ def artiq_master(tmp_path: Path):
     p_artiq_master = sp.Popen(
         ["artiq_master", "-vv"], stderr=sp.PIPE, stdout=sp.PIPE, cwd=tmp_path, env=env
     )
+
+    # Wait until artiq_master's control port is accepting connections before
+    # yielding, so that artiq_client submits don't race with master startup.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("localhost", 3251), timeout=0.5):
+                break
+        except OSError:
+            time.sleep(0.1)
+    else:
+        p_artiq_master.kill()
+        raise RuntimeError("artiq_master did not start within 30 seconds")
 
     yield p_artiq_master
 
