@@ -39,6 +39,9 @@ jobs:
     - name: Install dependencies
       run: poetry install
 
+    - name: Install docs build dependencies
+      run: poetry run pip install sphinx sphinx-rtd-theme sphinxcontrib-svg2pdfconverter
+
     - name: Build docs
       run: poetry run sphinx-build docs public -b html
 
