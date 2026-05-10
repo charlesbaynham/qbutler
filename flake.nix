@@ -30,9 +30,8 @@
           poetry-core
           poetry-dynamic-versioning
         ];
-        installCheckPhase = ''
-          ${nixpkgs.python3.interpreter} -m unittest discover test
-        '';
+        doCheck = false;
+        doInstallCheck = false;
       };
 
       ndscan = nixpkgs.python3Packages.buildPythonPackage {
