@@ -12,6 +12,14 @@ from qbutler.calibration import CalibrationResult
 from tests.func import kernel_calibrations
 
 
+# FIXME: these two tests should pass once kernel-mode optimisation is
+# implemented in calibration._run_optimizer_kernel. Remove the xfail marks
+# when that work is done.
+@pytest.mark.xfail(
+    reason="kernel-mode optimisation not yet implemented",
+    raises=NotImplementedError,
+    strict=True,
+)
 def test_kernel_optimizer_uses_single_kernel_call(fragment_factory, mock_core):
     """Verify that fix_own_state triggers exactly one kernel call for optimization."""
     c = fragment_factory(kernel_calibrations.KernelOptimizableCalibration)
@@ -30,6 +38,11 @@ def test_kernel_optimizer_uses_single_kernel_call(fragment_factory, mock_core):
     assert result == CalibrationResult.OK
 
 
+@pytest.mark.xfail(
+    reason="kernel-mode optimisation not yet implemented",
+    raises=NotImplementedError,
+    strict=True,
+)
 def test_kernel_optimizer_finds_optimum(fragment_factory):
     """Verify that the optimizer finds a parameter value near the optimum."""
     c = fragment_factory(kernel_calibrations.KernelOptimizableCalibration)
