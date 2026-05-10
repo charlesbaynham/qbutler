@@ -25,6 +25,12 @@ poetry run pre-commit run --all-files  # lint + format
 
 Tests are fully mocked by default — no live ARTIQ master needed. The `--withartiq` suite covers tests that exercise real ARTIQ tooling (kernel execution against the emulator, full-stack `artiq_master` runs); it requires `LIBARTIQ_EMULATOR` to be set, which the Nix dev shell does for you.
 
+Some `--withartiq` tests are additionally marked `fullstack` — they spin up a real `artiq_master` process and submit jobs via `artiq_client`, which requires IPv6 socket support. These pass in CI (GitHub Actions) but fail in Claude Code Web sessions (`CLAUDE_CODE_REMOTE=true`), which run in a sandboxed container without IPv6. Skip them with `--no-fullstack`:
+
+```bash
+nix develop . --command python -m pytest tests/ --withartiq --no-fullstack
+```
+
 ## Architecture
 
 ### Calibration lifecycle
