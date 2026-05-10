@@ -14,6 +14,7 @@ from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
+from ndscan.experiment.utils import is_kernel
 
 from . import dag
 from . import patch_ndscan  # noqa
@@ -579,6 +580,12 @@ class Calibration(ExpFragment):
             _, store = self.override_param(spec.name, spec.handle.get())
             stores[spec.name] = store
 
+        if is_kernel(self.check_own_state):
+            self._run_optimizer_kernel(optimizer_func, param_specs, stores)
+        else:
+            self._run_optimizer_host(optimizer_func, param_specs, stores)
+
+    def _run_optimizer_host(self, optimizer_func, param_specs, stores) -> None:
         best_data = None
         best_params = None
 
@@ -636,6 +643,14 @@ class Calibration(ExpFragment):
             for spec in param_specs:
                 self.reset_param(spec.name)
             self.recompute_param_defaults()
+
+    def _run_optimizer_kernel(self, optimizer_func, param_specs, stores) -> None:
+        # FIXME: kernel-mode optimisation not yet implemented; see
+        # docs/plans/kernel-mode-optimisations.md.
+        raise NotImplementedError(
+            "FIXME: kernel-mode optimisation not yet implemented; "
+            "see docs/plans/kernel-mode-optimisations.md"
+        )
 
     def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
         """Compare data value against current best based on optimization strategy."""

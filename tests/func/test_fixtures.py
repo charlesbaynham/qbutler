@@ -1,14 +1,15 @@
 import pytest
+from artiq.coredevice.core import CompileError
 
 from qbutler.calibration import Calibration
 
 
 def test_dataset_db(dataset_db):
-    pass
+    return dataset_db
 
 
 def test_dataset_mgr(dataset_mgr):
-    pass
+    return dataset_mgr
 
 
 def test_fragment_factory(fragment_factory):
@@ -33,14 +34,37 @@ def test_full_experiment_runner_fragment(build_and_run_experiment):
     )
 
 
-@pytest.mark.slow
-def test_build_and_run_full_stack(build_and_run_full_stack):
+def test_core_kernel_runs(build_and_run_experiment):
+    from hello_experiment import KernelExperiment
+
+    build_and_run_experiment(KernelExperiment)
+
+
+def test_core_mocking(build_and_run_experiment, mock_core):
+    from hello_experiment import KernelExperiment
+
+    assert len(mock_core.mock_calls) == 0
+
+    build_and_run_experiment(KernelExperiment)
+
+    assert len(mock_core.mock_calls) == 1
+
+
+def test_invalid_kernels_fail(build_and_run_experiment):
+    from hello_experiment import InvalidKernelExperiment
+
+    with pytest.raises(CompileError):
+        build_and_run_experiment(InvalidKernelExperiment)
+
+
+@pytest.mark.withartiq
+def test_build_and_run_full_stack_basic(build_and_run_full_stack):
     import hello_experiment
 
     print(build_and_run_full_stack("HelloExperiment", hello_experiment.__file__))
 
 
-@pytest.mark.slow
+@pytest.mark.withartiq
 def test_build_and_run_full_stack_error(build_and_run_full_stack):
     import hello_experiment
 
@@ -48,7 +72,14 @@ def test_build_and_run_full_stack_error(build_and_run_full_stack):
         build_and_run_full_stack("ErrorExperiment", hello_experiment.__file__)
 
 
-@pytest.mark.slow
+@pytest.mark.withartiq
+def test_build_and_run_full_stack_kernel(build_and_run_full_stack):
+    import hello_experiment
+
+    print(build_and_run_full_stack("KernelExperiment", hello_experiment.__file__))
+
+
+@pytest.mark.withartiq
 def test_build_and_run_full_stack_importer(build_and_run_full_stack):
     import hello_experiment
 

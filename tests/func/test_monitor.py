@@ -39,7 +39,6 @@ def test_monitor_builds(build_experiment):
 # If the monitor is set up wrong, this test can run forever. We therefore use
 # pytest-timeout to run it in a separate process and kill it if it overruns
 @pytest.mark.timeout(5, method="thread")
-@pytest.mark.slow
 def test_monitor_runs(build_experiment, mock_core):
     import concurrent.futures
 
@@ -84,7 +83,6 @@ def test_monitor_runs(build_experiment, mock_core):
 # If the monitor is set up wrong, this test can run forever. We therefore use
 # pytest-timeout to run it in a separate process and kill it if it overruns
 @pytest.mark.timeout(5, method="thread")
-@pytest.mark.slow
 def test_monitor_logs_to_db(build_experiment, mock_core, mock_db_writer):
     import concurrent.futures
 
