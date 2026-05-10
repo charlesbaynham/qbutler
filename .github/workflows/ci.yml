@@ -39,7 +39,7 @@ jobs:
       uses: cachix/cachix-action@v15
       with:
         name: qbutler
-        authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
     - name: Configure git for tests
       run: |
