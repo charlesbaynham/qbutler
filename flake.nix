@@ -16,8 +16,39 @@
   outputs = { self, artiq, src-ndscan, src-oitg }:
     let
       nixpkgs = artiq.nixpkgs;
-      artiqpkg = artiq.packages.x86_64-linux.artiq;
       libartiq-emulator = artiq.packages.x86_64-linux.libartiq-emulator;
+
+      # sipyco's tests try to bind to ::1 (IPv6 loopback) which isn't available here.
+      # Extract the sipyco-1.6 that artiqpkg actually uses (not the 1.4 in nixpkgs) and disable its tests.
+      # overridePythonAttrs (not overrideAttrs) is needed so that requiredPythonModules is recomputed,
+      # which is what python3.withPackages uses to collect the transitive dependency closure.
+      sipyco = (builtins.head (builtins.filter
+        (p: (p.pname or "") == "sipyco")
+        (artiq.packages.x86_64-linux.artiq.propagatedBuildInputs)
+      )).overridePythonAttrs (_: {
+        doCheck = false;
+        doInstallCheck = false;
+      });
+
+      replaceSipyco = deps:
+        builtins.map (p: if (p.pname or "") == "sipyco" then sipyco else p) deps;
+
+      artiq-comtools = (builtins.head (builtins.filter
+        (p: (p.pname or "") == "artiq-comtools")
+        (artiq.packages.x86_64-linux.artiq.propagatedBuildInputs)
+      )).overridePythonAttrs (old: {
+        propagatedBuildInputs = replaceSipyco old.propagatedBuildInputs;
+        doCheck = false;
+        doInstallCheck = false;
+      });
+
+      artiqpkg = (artiq.packages.x86_64-linux.artiq).overridePythonAttrs (old: {
+        propagatedBuildInputs = builtins.map (p:
+          if (p.pname or "") == "sipyco" then sipyco
+          else if (p.pname or "") == "artiq-comtools" then artiq-comtools
+          else p
+        ) old.propagatedBuildInputs;
+      });
 
       oitg = nixpkgs.python3Packages.buildPythonPackage {
         name = "oitg";
