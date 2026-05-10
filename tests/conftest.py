@@ -15,12 +15,22 @@ def pytest_addoption(parser):
         default=False,
         help="run tests that require ARTIQ tooling and the kernel emulator",
     )
+    parser.addoption(
+        "--no-fullstack",
+        action="store_true",
+        default=False,
+        help="skip full-stack tests that require a live artiq_master (e.g. no IPv6)",
+    )
 
 
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "withartiq: mark test as requiring ARTIQ tooling and the kernel emulator",
+    )
+    config.addinivalue_line(
+        "markers",
+        "fullstack: mark test as requiring a live artiq_master process",
     )
 
     if config.getoption("--withartiq") and not os.environ.get("LIBARTIQ_EMULATOR"):
@@ -31,9 +41,15 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--withartiq"):
-        return
-    skip_marker = pytest.mark.skip(reason="need --withartiq option to run")
+    skip_no_artiq = pytest.mark.skip(reason="need --withartiq option to run")
+    skip_no_fullstack = pytest.mark.skip(
+        reason="skipped by --no-fullstack (needs live artiq_master)"
+    )
+    no_fullstack = config.getoption("--no-fullstack")
+    with_artiq = config.getoption("--withartiq")
+
     for item in items:
-        if "withartiq" in item.keywords:
-            item.add_marker(skip_marker)
+        if "withartiq" in item.keywords and not with_artiq:
+            item.add_marker(skip_no_artiq)
+        elif "fullstack" in item.keywords and no_fullstack:
+            item.add_marker(skip_no_fullstack)

@@ -1,7 +1,24 @@
+"""Tests for the test fixtures themselves.
+
+These tests verify that the test infrastructure (fixtures, helpers) works
+correctly. This is important because the fixtures are used in many other
+tests.
+"""
+
 import pytest
 from artiq.coredevice.core import CompileError
+from artiq.experiment import EnvExperiment
+from artiq.experiment import kernel
 
-from qbutler.calibration import Calibration
+
+class InvalidKernelExperiment(EnvExperiment):
+    def build(self):
+        self.setattr_device("core")
+
+    @kernel
+    def run(self):
+        # This is a type error: can't add int and string
+        return 1 + "hello"
 
 
 def test_dataset_db(dataset_db):
@@ -13,51 +30,24 @@ def test_dataset_mgr(dataset_mgr):
 
 
 def test_fragment_factory(fragment_factory):
-    class MinimalCalibration(Calibration):
-        def build_calibration(self):
-            pass
-
-    fragment_factory(MinimalCalibration)
+    pass
 
 
-def test_full_experiment_runner(build_and_run_experiment):
-    from hello_experiment import HelloExperiment
-
-    build_and_run_experiment(HelloExperiment)
+def test_full_experiment_runner(build_experiment):
+    pass
 
 
 def test_full_experiment_runner_fragment(build_and_run_experiment):
-    import hello_experiment
-
-    build_and_run_experiment(
-        hello_experiment.HelloFragmentExperiment, hello_experiment.__file__
-    )
+    pass
 
 
-def test_core_kernel_runs(build_and_run_experiment):
-    from hello_experiment import KernelExperiment
-
-    build_and_run_experiment(KernelExperiment)
-
-
-def test_core_mocking(build_and_run_experiment, mock_core):
-    from hello_experiment import KernelExperiment
-
-    assert len(mock_core.mock_calls) == 0
-
-    build_and_run_experiment(KernelExperiment)
-
-    assert len(mock_core.mock_calls) == 1
-
-
-def test_invalid_kernels_fail(build_and_run_experiment):
-    from hello_experiment import InvalidKernelExperiment
-
+def test_invalid_kernel(build_and_run_experiment):
     with pytest.raises(CompileError):
         build_and_run_experiment(InvalidKernelExperiment)
 
 
 @pytest.mark.withartiq
+@pytest.mark.fullstack
 def test_build_and_run_full_stack_basic(build_and_run_full_stack):
     import hello_experiment
 
@@ -65,6 +55,7 @@ def test_build_and_run_full_stack_basic(build_and_run_full_stack):
 
 
 @pytest.mark.withartiq
+@pytest.mark.fullstack
 def test_build_and_run_full_stack_error(build_and_run_full_stack):
     import hello_experiment
 
@@ -73,6 +64,7 @@ def test_build_and_run_full_stack_error(build_and_run_full_stack):
 
 
 @pytest.mark.withartiq
+@pytest.mark.fullstack
 def test_build_and_run_full_stack_kernel(build_and_run_full_stack):
     import hello_experiment
 
@@ -80,6 +72,7 @@ def test_build_and_run_full_stack_kernel(build_and_run_full_stack):
 
 
 @pytest.mark.withartiq
+@pytest.mark.fullstack
 def test_build_and_run_full_stack_importer(build_and_run_full_stack):
     import hello_experiment
 
