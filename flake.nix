@@ -63,7 +63,7 @@
     in {
       devShells.x86_64-linux.default = nixpkgs.mkShell {
         name = "qbutler-unit-test-shell";
-        buildInputs = [ pythonEnv libartiq-emulator nixpkgs.nixfmt ];
+        buildInputs = [ pythonEnv libartiq-emulator nixpkgs.llvm_14 nixpkgs.nixfmt ];
         shellHook = ''
           export PYTHONPATH="$(pwd):$PYTHONPATH"
           export LIBARTIQ_EMULATOR=${libartiq-emulator}/lib/libartiq_emulator.so
