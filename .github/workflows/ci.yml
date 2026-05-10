@@ -27,24 +27,23 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - uses: actions/setup-python@v6
+    - name: Install Nix
+      uses: cachix/install-nix-action@v27
       with:
-        python-version: '3.11'
+        extra_nix_config: |
+          experimental-features = nix-command flakes
+          extra-substituters = https://nixbld.m-labs.hk
+          extra-trusted-public-keys = nixbld.m-labs.hk-1:5aSRVA5b320xbNvu30tqxVPXpld73bhtOeH6uAjRyHc=
 
-    - name: Install Poetry
-      uses: snok/install-poetry@v1
-      with:
-        virtualenvs-in-project: true
-
-    - name: Cache virtualenv
+    - name: Cache Nix store
       uses: actions/cache@v5
       with:
-        path: .venv
-        key: venv-${{ runner.os }}-py3.11-${{ hashFiles('**/poetry.lock') }}
-        restore-keys: venv-${{ runner.os }}-py3.11-
-
-    - name: Install dependencies
-      run: poetry install
+        path: |
+          ~/.cache/nix
+          /nix/store
+          /nix/var/nix/db
+        key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+        restore-keys: nix-${{ runner.os }}-
 
     - name: Configure git for tests
       run: |
@@ -52,4 +51,4 @@ jobs:
         git config --global user.name "GitHub CI"
 
     - name: Run tests
-      run: poetry run pytest --runslow
+      run: nix develop --command python -m pytest --withartiq

@@ -36,10 +36,13 @@ Tests use `pytest <https://docs.pytest.org>`_:
 
 .. code-block:: bash
 
-    poetry run pytest           # fast tests only
-    poetry run pytest --runslow # include slow tests (always run in CI)
+    poetry run pytest              # default suite (no ARTIQ tooling required)
+    poetry run pytest --withartiq  # include tests that need the ARTIQ kernel emulator
 
-Mark slow tests with the ``@pytest.mark.slow`` decorator. CI always runs the full suite.
+The ``--withartiq`` flag requires ``LIBARTIQ_EMULATOR`` to be set, which is
+provided by the Nix dev shell (``nix develop``). Mark such tests with
+``@pytest.mark.withartiq``. CI runs the full suite (``--withartiq``) inside the
+Nix dev shell.
 
 Linting
 -------

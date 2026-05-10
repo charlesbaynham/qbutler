@@ -6,17 +6,17 @@ description: Run qbutler tests inside the Nix dev shell with the ARTIQ emulator
 Run the full qbutler test suite inside the Nix dev shell:
 
 ```bash
-nix develop --impure . --command python -m pytest tests/ -v
+nix develop . --command python -m pytest tests/ -v
 ```
 
-For slow tests, add `--runslow`:
+For tests that require the ARTIQ kernel emulator + tooling, add `--withartiq`:
 
 ```bash
-nix develop --impure . --command python -m pytest tests/ -v --runslow
+nix develop . --command python -m pytest tests/ -v --withartiq
 ```
 
 For a specific test file or directory:
 
 ```bash
-nix develop --impure . --command python -m pytest tests/unit/ -v
+nix develop . --command python -m pytest tests/unit/ -v
 ```
