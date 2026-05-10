@@ -139,6 +139,6 @@ def test_run_rabi_flop_as_scan(build_and_run_experiment):
     build_and_run_experiment(RabiFlopSimScanner, experiment_file=__file__)
 
 
-@pytest.mark.slow
+@pytest.mark.withartiq
 def test_run_rabi_flop_as_scan_full_stack(build_and_run_full_stack):
     build_and_run_full_stack("RabiFlopSimScanner", __file__)
