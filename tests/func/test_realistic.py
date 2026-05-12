@@ -6,6 +6,7 @@ submission.
 """
 
 import pytest
+from ndscan.experiment.entry_point import make_fragment_scan_exp
 
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
@@ -58,6 +59,10 @@ class RabiFlopSimScanner(Calibration):
             return CalibrationResult.BAD_DATA, t_pi
 
 
+# Wrap as a proper ARTIQ scan experiment so artiq_master can instantiate it.
+RabiFlopSimScannerExperiment = make_fragment_scan_exp(RabiFlopSimScanner)
+
+
 def test_build_rabi_flob_calibration(fragment_factory):
     """Verify that the Rabi flop calibration can be built."""
     c = fragment_factory(RabiFlopSimCalibration)
@@ -93,4 +98,4 @@ def test_run_rabi_flop_as_scan(fragment_factory):
 @pytest.mark.withartiq
 @pytest.mark.fullstack
 def test_run_rabi_flop_as_scan_full_stack(build_and_run_full_stack):
-    build_and_run_full_stack("RabiFlopSimScanner", __file__)
+    build_and_run_full_stack("RabiFlopSimScannerExperiment", __file__)
