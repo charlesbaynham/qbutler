@@ -9,7 +9,6 @@ from typing import Optional
 from typing import Tuple
 from typing import Type
 
-from artiq.experiment import kernel
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
@@ -646,86 +645,12 @@ class Calibration(ExpFragment):
             self.recompute_param_defaults()
 
     def _run_optimizer_kernel(self, optimizer_func, param_specs, stores) -> None:
-        """Run optimizer when check_own_state is a kernel method.
-
-        All optimizer-generated parameter combinations are collected on the
-        host up-front, then evaluated in a single kernel invocation to
-        minimise kernel round-trips.  A host-side RPC callback tracks the
-        best result across iterations.
-        """
-        all_param_dicts = list(optimizer_func(param_specs))
-        if not all_param_dicts:
-            raise CalibrationError("No parameter points to try")
-
-        param_names = [spec.name for spec in param_specs]
-
-        # Per-parameter value lists indexed by [param_index][point_index],
-        # stored as instance attributes so the kernel can read them.
-        self._kernel_param_values = [
-            [d[name] for d in all_param_dicts] for name in param_names
-        ]
-        self._kernel_stores = [stores[name] for name in param_names]
-        self._n_kernel_points = len(all_param_dicts)
-        self._kernel_best_idx = -1
-        self._kernel_best_data = None
-
-        try:
-            # Single kernel call: evaluate every point, report results back
-            # to _kernel_record_result via RPC, then clean up.
-            self._kernel_sweep_all()
-
-            best_idx = self._kernel_best_idx
-            if best_idx < 0:
-                raise CalibrationError(
-                    "No valid parameters found during kernel optimization"
-                )
-
-            best_params = all_param_dicts[best_idx]
-
-            for name, value in best_params.items():
-                self.set_dataset(
-                    self._param_dataset_key_from_name(name),
-                    value,
-                    broadcast=True,
-                    persist=True,
-                )
-        finally:
-            del self._kernel_param_values
-            del self._kernel_stores
-            del self._n_kernel_points
-            for spec in param_specs:
-                self.reset_param(spec.name)
-            self.recompute_param_defaults()
-
-    def _set_params_for_point(self, idx: int) -> None:
-        """Host-side RPC: set parameter stores to the values for optimizer point *idx*."""
-        for store, values in zip(self._kernel_stores, self._kernel_param_values):
-            store.set_value(values[idx])
-
-    def _kernel_record_result(self, idx: int, result: int, data: Any) -> None:
-        """Host-side RPC: update best-result tracker after evaluating point *idx*."""
-        cal_result = CalibrationResult(result)
-        if cal_result == CalibrationResult.OK and self._is_better(
-            data, self._kernel_best_data
-        ):
-            self._kernel_best_idx = idx
-            self._kernel_best_data = data
-
-    @kernel
-    def _kernel_sweep_all(self) -> None:
-        """Evaluate all pre-generated optimizer points in a single kernel call.
-
-        For each point, parameter values are set via RPC (*_set_params_for_point*),
-        then *check_own_state* is called inline (as a nested kernel), and the
-        result is reported back to the host via RPC (*_kernel_record_result*).
-        Both *_set_params_for_point* and *_kernel_record_result* are implicit
-        RPCs: any non-kernel method called from a kernel is automatically
-        dispatched to the host.
-        """
-        for i in range(self._n_kernel_points):
-            self._set_params_for_point(i)
-            result, data = self.check_own_state()
-            self._kernel_record_result(i, result, data)
+        # FIXME: kernel-mode optimisation not yet implemented; see
+        # docs/plans/kernel-mode-optimisations.md.
+        raise NotImplementedError(
+            "FIXME: kernel-mode optimisation not yet implemented; "
+            "see docs/plans/kernel-mode-optimisations.md"
+        )
 
     def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
         """Compare data value against current best based on optimization strategy."""
