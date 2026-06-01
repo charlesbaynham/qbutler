@@ -1,4 +1,4 @@
-"""qbutler - Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably. """
+"""qbutler - Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably."""
 
 __author__ = "Charles Baynham <charles.baynham@gmail.com>"
 __all__ = []
