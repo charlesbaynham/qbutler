@@ -14,6 +14,8 @@ def _python_files():
         p.relative_to(_REPO_ROOT)
         for p in _REPO_ROOT.rglob("*.py")
         if p.resolve() != this_file
+        # Skip hidden dirs: .claude/deps holds clones of third-party repos
+        and not any(part.startswith(".") for part in p.relative_to(_REPO_ROOT).parts)
     )
 
 
