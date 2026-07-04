@@ -331,6 +331,11 @@ class Calibration(ExpFragment):
             self.setattr_calibration(dep_calibration_class, name=name)
 
             dep_calibration_object = getattr(self, name)
+            # Dependencies are driven by check_state/fix_state walks, never by
+            # the enclosing ndscan scan: detach so the scan machinery neither
+            # collects their (unpushed) status/data channels nor runs their
+            # setup/cleanup
+            self.detach_fragment(dep_calibration_object)
             dag.add_to_dependency_map(self, dep_calibration_object)
         else:
             # If this Calibration has been already created elsewhere, don't make a
