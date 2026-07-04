@@ -12,14 +12,7 @@ from qbutler.calibration import CalibrationResult
 from tests.func import kernel_calibrations
 
 
-# FIXME: these two tests should pass once kernel-mode optimisation is
-# implemented in calibration._run_optimizer_kernel. Remove the xfail marks
-# when that work is done.
-@pytest.mark.xfail(
-    reason="kernel-mode optimisation not yet implemented",
-    raises=NotImplementedError,
-    strict=True,
-)
+@pytest.mark.withartiq
 def test_kernel_optimizer_uses_single_kernel_call(fragment_factory, mock_core):
     """Verify that fix_own_state triggers exactly one kernel call for optimization."""
     c = fragment_factory(kernel_calibrations.KernelOptimizableCalibration)
@@ -38,11 +31,7 @@ def test_kernel_optimizer_uses_single_kernel_call(fragment_factory, mock_core):
     assert result == CalibrationResult.OK
 
 
-@pytest.mark.xfail(
-    reason="kernel-mode optimisation not yet implemented",
-    raises=NotImplementedError,
-    strict=True,
-)
+@pytest.mark.withartiq
 def test_kernel_optimizer_finds_optimum(fragment_factory):
     """Verify that the optimizer finds a parameter value near the optimum."""
     c = fragment_factory(kernel_calibrations.KernelOptimizableCalibration)
@@ -50,6 +39,22 @@ def test_kernel_optimizer_finds_optimum(fragment_factory):
     c.fix_own_state()
 
     # The optimum is at 7.0; check_state should now pass
+    result, data = c.check_state()
+    assert result == CalibrationResult.OK
+
+
+@pytest.mark.withartiq
+def test_kernel_feedback_optimizer_falls_back_to_host(fragment_factory, mock_core):
+    """A non-batchable (feedback) optimizer must still work with a kernel
+    check_own_state, via the host loop (one kernel call per point)."""
+    c = fragment_factory(kernel_calibrations.KernelFeedbackOptimizableCalibration)
+
+    initial_calls = mock_core.call_count
+
+    c.fix_own_state()
+
+    assert mock_core.call_count - initial_calls > 1
+
     result, data = c.check_state()
     assert result == CalibrationResult.OK
 

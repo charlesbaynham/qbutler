@@ -9,6 +9,7 @@ from typing import Optional
 from typing import Tuple
 from typing import Type
 
+from artiq.experiment import kernel
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
@@ -571,9 +572,7 @@ class Calibration(ExpFragment):
             if not entry or entry.get("last_check") is None:
                 return False
             # pyon round-trips CalibrationResult as a string of its int value
-            self.__most_recent_check_result = CalibrationResult(
-                int(entry["status"])
-            )
+            self.__most_recent_check_result = CalibrationResult(int(entry["status"]))
             self.__most_recent_check_timestamp = float(entry["last_check"])
             return True
         except Exception:
@@ -706,12 +705,90 @@ class Calibration(ExpFragment):
             self.recompute_param_defaults()
 
     def _run_optimizer_kernel(self, optimizer_func, param_specs, stores) -> None:
-        # FIXME: kernel-mode optimisation not yet implemented; see
-        # docs/plans/kernel-mode-optimisations.md.
-        raise NotImplementedError(
-            "FIXME: kernel-mode optimisation not yet implemented; "
-            "see docs/plans/kernel-mode-optimisations.md"
-        )
+        """Run the optimizer when :meth:`check_own_state` is a kernel.
+
+        For batchable optimizers (``optimizer_func.batchable == True``, i.e.
+        the generator ignores ``send()`` feedback) all points are collected up
+        front and evaluated in a single kernel call, so the whole sweep pays
+        one compile + one upload. Parameter values are applied *on the core
+        device*: the kernel embeds references to the ``ParamStore`` objects
+        and calls their ``@portable`` ``set_value()``, so the update is seen
+        by ``check_own_state()``. (Mutating the host-side store from an RPC
+        does not work — the running kernel holds its own copy of the store,
+        so every point would be measured at the initial parameter value.)
+
+        Feedback optimizers need each result before choosing the next point,
+        so they cannot be batched into one kernel; fall back to the host
+        loop, which pays one kernel call per point.
+
+        In kernel mode the "data" output of :meth:`check_own_state` must be a
+        float (the optimization metric).
+        """
+        if not getattr(optimizer_func, "batchable", False):
+            logger.warning(
+                "Optimizer %s is not marked batchable: falling back to the "
+                "host optimizer loop, which recompiles and runs one kernel "
+                "per point. Set `optimizer_func.batchable = True` if the "
+                "optimizer ignores send() feedback.",
+                getattr(optimizer_func, "__name__", optimizer_func),
+            )
+            self._run_optimizer_host(optimizer_func, param_specs, stores)
+            return
+
+        all_param_dicts = list(optimizer_func(param_specs))
+        if not all_param_dicts:
+            raise CalibrationError("No parameter points to try")
+
+        param_names = [spec.name for spec in param_specs]
+
+        # [point][param] value matrix and parallel store list, as instance
+        # attributes so the kernel sweep can read them.
+        self._kop_points = [
+            [float(d[name]) for name in param_names] for d in all_param_dicts
+        ]
+        self._kop_stores = [stores[name] for name in param_names]
+        self._kop_best_idx = -1
+        self._kop_best_data = None
+
+        try:
+            self._kernel_sweep_all()
+
+            if self._kop_best_idx < 0:
+                raise CalibrationError("No valid parameters found")
+
+            # The best point already measured OK during the sweep; a separate
+            # verification pass would cost a second kernel compile + upload.
+            best_params = all_param_dicts[self._kop_best_idx]
+            for name, value in best_params.items():
+                self.set_dataset(
+                    self._param_dataset_key_from_name(name),
+                    value,
+                    broadcast=True,
+                    persist=True,
+                )
+        finally:
+            del self._kop_points
+            del self._kop_stores
+            for spec in param_specs:
+                self.reset_param(spec.name)
+            self.recompute_param_defaults()
+
+    def _kop_record_result(self, idx, result, data) -> None:
+        """RPC target: track the best OK point seen by the kernel sweep."""
+        if CalibrationResult(int(result)) == CalibrationResult.OK and self._is_better(
+            data, self._kop_best_data
+        ):
+            self._kop_best_idx = idx
+            self._kop_best_data = data
+
+    @kernel
+    def _kernel_sweep_all(self):
+        """Evaluate every pre-collected optimizer point in one kernel call."""
+        for i in range(len(self._kop_points)):
+            for j in range(len(self._kop_stores)):
+                self._kop_stores[j].set_value(self._kop_points[i][j])
+            result, data = self.check_own_state()
+            self._kop_record_result(i, result, data)
 
     def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
         """Compare data value against current best based on optimization strategy."""
@@ -746,7 +823,10 @@ class Calibration(ExpFragment):
 
         Args:
             optimizer_func: A generator function that yields param dicts and
-            receives (result, data)
+            receives (result, data). If the generator ignores the ``send()``
+            feedback (the full point list is known up front), set
+            ``optimizer_func.batchable = True`` so kernel-mode calibrations
+            can evaluate the whole sweep in a single kernel call.
         """
         if not self.__in_build_calibration:
             raise TypeError("This method must only be called in build_calibration()")

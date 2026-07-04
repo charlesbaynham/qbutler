@@ -4,6 +4,7 @@ from ndscan.experiment.entry_point import make_fragment_scan_exp
 
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
+from qbutler.optimizers import coordinate_descent_optimizer
 
 
 class MinimalKernelCalibration(Calibration):
@@ -45,6 +46,31 @@ class KernelOptimizableCalibration(Calibration):
             max=10.0,
             default=5.0,
         )
+
+    @kernel
+    def check_own_state(self):
+        p = self.param1.get()
+        data = 10.0 - abs(p - 7.0)
+        if data > 8.0:
+            return CalibrationResult.OK, data
+        else:
+            return CalibrationResult.BAD_DATA, data
+
+
+class KernelFeedbackOptimizableCalibration(Calibration):
+    """As KernelOptimizableCalibration, but with a feedback (non-batchable)
+    optimizer, which cannot run as a single kernel sweep."""
+
+    def build_calibration(self):
+        self.setattr_device("core")
+        self.setattr_param_optimizable(
+            "param1",
+            "Test param",
+            min=0.0,
+            max=10.0,
+            default=5.0,
+        )
+        self.set_optimizer(coordinate_descent_optimizer)
 
     @kernel
     def check_own_state(self):
