@@ -537,7 +537,10 @@ class Calibration(ExpFragment):
         calibration run.
         """
         try:
-            table = self.get_dataset(STATUS_DATASET, default={})
+            # archive=False: archiving would pull the dict into the run's
+            # HDF5 results, which cannot represent it (and kills the worker
+            # at write_results)
+            table = self.get_dataset(STATUS_DATASET, default={}, archive=False)
             if not isinstance(table, dict):
                 table = {}
             data = self.__most_recent_check_data
@@ -557,7 +560,7 @@ class Calibration(ExpFragment):
         """Hydrate check state from :data:`STATUS_DATASET` (a previous worker
         process may have checked this calibration). Returns True on success."""
         try:
-            entry = self.get_dataset(STATUS_DATASET, default={}).get(
+            entry = self.get_dataset(STATUS_DATASET, default={}, archive=False).get(
                 self.__class__.__name__
             )
             if not entry or entry.get("last_check") is None:
