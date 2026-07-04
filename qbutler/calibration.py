@@ -23,6 +23,11 @@ from .optimizers import grid_search_optimizer
 
 logger = logging.getLogger(__name__)
 
+#: Broadcast dataset holding a {class_name: {status, last_check, timeout, data}}
+#: table, published on every check so applets and later worker processes can
+#: see calibration state.
+STATUS_DATASET = "calibrations.status"
+
 
 class CalibrationError(RuntimeError):
     pass
@@ -235,7 +240,7 @@ class Calibration(ExpFragment):
             ParamHandle: The newly created parameter handle.
         """
         if not self.__in_build_calibration:
-            return TypeError("This method must only be called in build_calibration()")
+            raise TypeError("This method must only be called in build_calibration()")
 
         dataset_key = self._param_dataset_key_from_name(name)
 
@@ -360,7 +365,7 @@ class Calibration(ExpFragment):
             timeout (float): _description_
         """
         if not self.__in_build_calibration:
-            return TypeError("This method must only be called in build_calibration()")
+            raise TypeError("This method must only be called in build_calibration()")
 
         self.__timeout = timeout
 
@@ -429,6 +434,8 @@ class Calibration(ExpFragment):
                 Calibration, or None if the check failed before the final
                 layer was run.
         """
+        dag.publish_dag(self)
+
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
         r = CalibrationResult.OK
@@ -472,6 +479,8 @@ class Calibration(ExpFragment):
                 results; otherwise it is the first bad result,
                 or OK.
         """
+        dag.publish_dag(self)
+
         # Iterate over the dependencies, starting with the ones furthest away,
         # and check their states, ending with this object
         deps = dag.get_dependencies(self)
@@ -517,13 +526,57 @@ class Calibration(ExpFragment):
             self.__most_recent_check_timestamp,
         )
 
+        self._publish_status()
+
         return self.__most_recent_check_result, self.__most_recent_check_data
+
+    def _publish_status(self) -> None:
+        """Best-effort mirror of check state to :data:`STATUS_DATASET`.
+
+        Never raises: dataset plumbing must not be able to break a
+        calibration run.
+        """
+        try:
+            table = self.get_dataset(STATUS_DATASET, default={})
+            if not isinstance(table, dict):
+                table = {}
+            data = self.__most_recent_check_data
+            table[self.__class__.__name__] = {
+                "status": int(self.__most_recent_check_result),
+                "last_check": self.__most_recent_check_timestamp,
+                "timeout": self.__timeout,
+                "data": float(data) if isinstance(data, (int, float)) else None,
+            }
+            self.set_dataset(
+                STATUS_DATASET, table, broadcast=True, persist=True, archive=False
+            )
+        except Exception:
+            logger.warning("Could not publish calibration status", exc_info=True)
+
+    def _recall_status(self) -> bool:
+        """Hydrate check state from :data:`STATUS_DATASET` (a previous worker
+        process may have checked this calibration). Returns True on success."""
+        try:
+            entry = self.get_dataset(STATUS_DATASET, default={}).get(
+                self.__class__.__name__
+            )
+            if not entry or entry.get("last_check") is None:
+                return False
+            # pyon round-trips CalibrationResult as a string of its int value
+            self.__most_recent_check_result = CalibrationResult(
+                int(entry["status"])
+            )
+            self.__most_recent_check_timestamp = float(entry["last_check"])
+            return True
+        except Exception:
+            logger.debug("Could not recall calibration status", exc_info=True)
+            return False
 
     def _guess_own_state(self) -> CalibrationResult:
         if (
             self.__most_recent_check_result is None
             or self.__most_recent_check_timestamp is None
-        ):
+        ) and not self._recall_status():
             logger.debug(
                 f"Guess own state of {self.__class__} failed: no checks have ever been done"
             )

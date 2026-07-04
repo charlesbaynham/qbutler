@@ -12,6 +12,35 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from .calibration import Calibration
 
+#: Broadcast dataset holding {"nodes": [...], "edges": [[parent, dependency], ...]}
+#: describing the currently-instantiated calibration DAG (class names).
+DAG_DATASET = "calibrations.dag"
+
+
+def publish_dag(cal: "Calibration") -> None:
+    """Best-effort publish of the DAG structure to :data:`DAG_DATASET`.
+
+    Never raises: dataset plumbing must not be able to break a calibration
+    run. ``cal`` is only used for its ``set_dataset``.
+    """
+    try:
+        G = _get_graph()
+        nodes = sorted({type(r()).__name__ for r in G.nodes if r() is not None})
+        edges = sorted(
+            [type(a()).__name__, type(b()).__name__]
+            for a, b in G.edges
+            if a() is not None and b() is not None
+        )
+        cal.set_dataset(
+            DAG_DATASET,
+            {"nodes": nodes, "edges": edges},
+            broadcast=True,
+            persist=True,
+            archive=False,
+        )
+    except Exception:
+        logger.warning("Could not publish calibration DAG", exc_info=True)
+
 # See docstring for add_to_dependency_map
 _dependency_map = []
 
