@@ -1,5 +1,21 @@
 # Plan: Supporting kernel-mode optimisations in qbutler
 
+> **Status (2026-07-09): implemented, but not via `KernelScanRunner`.**
+> The shipped design is a hand-rolled *resident kernel loop*
+> (`Calibration._optimizer_kernel_loop`): one kernel call per fix, with the
+> kernel pulling each next point from the host optimizer generator over a
+> sync RPC (`_kopt_next_point`, `[]` = done), applying it device-side via the
+> stores' `@portable set_value()`, and finishing with an in-kernel
+> verification pass. Any host generator works — feedback optimisers (BO)
+> included — so the `batchable` flag and the earlier single-batched-sweep
+> mechanism were removed. On top of it, `prepare_kernel_fix()` +
+> `fix_state_kernel()` generate (via `kernel_from_string`) a driver that
+> fixes an entire calibration DAG from within a single kernel, the walk
+> decisions living host-side behind RPCs (`_fsk_*`). The `KernelScanRunner`
+> route below was not taken: coupling to ndscan internals was judged
+> disproportionate to the ~ms/point RPC saving. This document is kept for
+> the verified ARTIQ facts and the design constraints, which still hold.
+
 ## Context
 
 `qbutler` provides a `Calibration` class (`qbutler/calibration.py`) that drives parameter optimisation on top of `ndscan`/ARTIQ. Today the optimiser is *entirely host-side*: `Calibration._run_optimizer` (`calibration.py:573`) is a Python loop that, for each candidate point, mutates a `ParamStore` via `set_value()` and calls `_do_check_own_state()` → user's `check_own_state()` (a host method).
