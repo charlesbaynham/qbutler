@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 #: see calibration state.
 STATUS_DATASET = "calibrations.status"
 
+#: Broadcast dataset holding a {class_name: {param_names, points, data, status,
+#: started}} table, appended to as an optimizer walks so an applet can watch
+#: the scan happen live (see :meth:`Calibration._publish_optimizer_point`).
+OPTIMIZER_DATASET = "calibrations.optimizer"
+
 
 class CalibrationError(RuntimeError):
     pass
@@ -770,6 +775,53 @@ class Calibration(ExpFragment):
         except Exception:
             logger.warning("Could not publish calibration status", exc_info=True)
 
+    def _reset_optimizer_trace(self, param_names) -> None:
+        """Start a fresh live trace for this optimizer run.
+
+        Called at the top of every fix so an applet plots one sweep at a time.
+        Never raises: visualisation must not be able to break a calibration.
+        """
+        try:
+            table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+            if not isinstance(table, dict):
+                table = {}
+            table[self.__class__.__name__] = {
+                "param_names": list(param_names),
+                "points": [],
+                "data": [],
+                "status": [],
+                "started": time(),
+            }
+            self.set_dataset(
+                OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
+            )
+        except Exception:
+            logger.warning("Could not reset optimizer trace", exc_info=True)
+
+    def _publish_optimizer_point(self, values, result, data) -> None:
+        """Append one just-measured optimizer point to the live trace.
+
+        ``values`` is the parameter tuple that produced ``(result, data)``.
+        Broadcast so an applet can watch the scan as it happens. Best-effort:
+        both the host loop and the resident kernel loop call this per point,
+        and neither may be broken by a dataset hiccup.
+        """
+        try:
+            table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+            if not isinstance(table, dict):
+                return
+            entry = table.get(self.__class__.__name__)
+            if not isinstance(entry, dict):
+                return
+            entry["points"].append([float(v) for v in values])
+            entry["data"].append(float(data) if isinstance(data, (int, float)) else None)
+            entry["status"].append(int(result))
+            self.set_dataset(
+                OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
+            )
+        except Exception:
+            logger.warning("Could not publish optimizer point", exc_info=True)
+
     def _on_recalibrated(self, committed_params: dict) -> None:
         """Hook fired after a fix commits new optimal parameter values.
 
@@ -878,6 +930,7 @@ class Calibration(ExpFragment):
         best_params = None
 
         try:
+            self._reset_optimizer_trace([spec.name for spec in param_specs])
             optimizer = optimizer_func(param_specs)
 
             try:
@@ -895,6 +948,9 @@ class Calibration(ExpFragment):
 
                 logger.debug(
                     "Optimizer point %s: result=%s, data=%s", param_dict, result, data
+                )
+                self._publish_optimizer_point(
+                    [param_dict[spec.name] for spec in param_specs], result, data
                 )
 
                 if result == CalibrationResult.OK and self._is_better(data, best_data):
@@ -975,6 +1031,7 @@ class Calibration(ExpFragment):
         self._kopt_best_values = None
         self._kopt_best_data = None
         self._kopt_verify_result = None
+        self._reset_optimizer_trace([spec.name for spec in self._kopt_specs])
 
     def _kopt_prime_default(self) -> None:
         """Prime the resident loop for this node's configured optimizer (used
@@ -1042,6 +1099,7 @@ class Calibration(ExpFragment):
             result,
             data,
         )
+        self._publish_optimizer_point(self._kopt_current_values, result, data)
         if result == CalibrationResult.OK and self._is_better(
             data, self._kopt_best_data
         ):
