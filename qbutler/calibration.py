@@ -814,7 +814,9 @@ class Calibration(ExpFragment):
             if not isinstance(entry, dict):
                 return
             entry["points"].append([float(v) for v in values])
-            entry["data"].append(float(data) if isinstance(data, (int, float)) else None)
+            entry["data"].append(
+                float(data) if isinstance(data, (int, float)) else None
+            )
             entry["status"].append(int(result))
             self.set_dataset(
                 OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
