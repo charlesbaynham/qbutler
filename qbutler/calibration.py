@@ -562,6 +562,26 @@ class Calibration(ExpFragment):
         except Exception:
             logger.warning("Could not publish calibration status", exc_info=True)
 
+    def _on_recalibrated(self, committed_params: dict) -> None:
+        """Hook fired after a fix commits new optimal parameter values.
+
+        ``committed_params`` maps each optimizable-parameter name to the value
+        just persisted. The base implementation does nothing: qbutler stays
+        agnostic about where recalibrations are recorded. Override this (e.g.
+        via a downstream mix-in) to log them somewhere such as a database.
+
+        Runs at the end of a successful fix; the caller swallows any exception,
+        so an override need not be defensive, but must not have side effects
+        that a calibration run depends on.
+        """
+
+    def _fire_recalibrated(self, committed_params: dict) -> None:
+        """Best-effort dispatch to :meth:`_on_recalibrated`; never raises."""
+        try:
+            self._on_recalibrated(dict(committed_params))
+        except Exception:
+            logger.warning("_on_recalibrated hook failed", exc_info=True)
+
     def _recall_status(self) -> bool:
         """Hydrate check state from :data:`STATUS_DATASET` (a previous worker
         process may have checked this calibration). Returns True on success."""
@@ -699,6 +719,8 @@ class Calibration(ExpFragment):
             if result != CalibrationResult.OK:
                 raise CalibrationError("Best parameters did not pass check")
 
+            self._fire_recalibrated(best_params)
+
         finally:
             for spec in param_specs:
                 self.reset_param(spec.name)
@@ -766,6 +788,7 @@ class Calibration(ExpFragment):
                     broadcast=True,
                     persist=True,
                 )
+            self._fire_recalibrated(best_params)
         finally:
             del self._kop_points
             del self._kop_stores
