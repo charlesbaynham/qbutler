@@ -13,6 +13,7 @@ from artiq.experiment import TBool
 from artiq.experiment import TFloat
 from artiq.experiment import TInt32
 from artiq.experiment import TList
+from artiq.experiment import TTuple
 from artiq.experiment import kernel
 from artiq.experiment import kernel_from_string
 from artiq.experiment import rpc
@@ -90,8 +91,26 @@ class Calibration(ExpFragment):
 
     """
 
-    def __repr__(self) -> str:
-        return self.__class__.__name__
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # A calibration whose own check runs on the core device is "kernel
+        # mode": its check_state / fix_state are driven from a single resident
+        # kernel (check_state_kernel / fix_state_kernel), so they can be called
+        # directly from a caller's @kernel run_once. Host-mode calibrations keep
+        # the plain host walk. The driver behind these is built lazily by
+        # host_setup (see prepare_kernel_ops).
+        if is_kernel(cls.check_own_state):
+            cls.check_state = cls.check_state_kernel
+            cls.fix_state = cls.fix_state_kernel
+
+    def host_setup(self):
+        super().host_setup()
+        # Build the kernel drivers before this Calibration's methods are
+        # compiled into any caller's kernel. Kernel-mode only; a no-op
+        # otherwise. Idempotent, so an explicit prepare_kernel_ops() call
+        # elsewhere is harmless.
+        if is_kernel(self.check_own_state):
+            self.prepare_kernel_ops()
 
     def build_calibration(self):
         """
@@ -528,50 +547,67 @@ class Calibration(ExpFragment):
                         f"Calibration of {dep.__class__.__name__} failed"
                     )
 
-    def prepare_kernel_fix(self) -> None:
-        """Build the kernel driver behind :meth:`fix_state_kernel`.
+    def prepare_kernel_ops(self) -> None:
+        """Build the kernel drivers behind :meth:`check_state_kernel` and
+        :meth:`fix_state_kernel` (which, for a kernel-mode calibration, *are*
+        :meth:`check_state` / :meth:`fix_state`).
 
-        Must run on the host before any kernel calling
-        :meth:`fix_state_kernel` is compiled (the consuming fragment's
-        ``host_setup()`` is the natural place): the generated driver and the
-        parameter stores it references are embedded into the kernel at
-        compile time.
+        Must run on the host before any kernel that calls them is compiled.
+        :meth:`host_setup` does this automatically for kernel-mode
+        calibrations, so you rarely call it yourself; the generated drivers
+        and the parameter stores they reference are embedded into the kernel
+        at compile time.
 
         Every calibration in the dependency tree must have a ``@kernel``
         ``check_own_state`` returning a float "data" value. Nodes are fixed
         with either a ``@kernel`` ``fix_own_state`` override or the default
         optimizer fix (which requires optimizable params); a node with
-        neither is check-only, and the fix fails if it is found broken. The
+        neither is check-only, and a fix fails if it is found broken. The
         optimizer strategies run on the host and are reached by RPC.
 
         The optimizable params of default-fix nodes are overridden for the
         lifetime of the fragment (their stores must outlive any one fix, as
         recompiles re-embed them).
         """
-        if getattr(self, "_fsk_driver", None) is not None:
+        if getattr(self, "_kops_ready", False):
             return
 
         deps = dag.get_dependencies(self)
         uses_default_fix = []
         fixable = []
 
-        code_lines = [
+        # Two drivers over the same deps: the check driver runs check_own_state
+        # per node (op == i); the fix driver interleaves check (op == 2i) and
+        # fix (op == 2i+1) ops. The host controllers decide which ops fire.
+        check_lines = [
+            "cal._csk_begin(force, continue_on_fail)",
+            "op = cal._csk_next()",
+            "while op >= 0:",
+        ]
+        fix_lines = [
             "cal._fsk_begin(force)",
             "op = cal._fsk_next()",
             "while op >= 0:",
         ]
-        branch = "if"
+        cbranch = "if"
+        fbranch = "if"
         for i, dep in enumerate(deps):
             if not is_kernel(dep.check_own_state):
                 raise CalibrationError(
                     f"{dep.__class__.__name__}.check_own_state must be a "
-                    "kernel for a kernel-driven fix"
+                    "kernel for a kernel-driven check/fix"
                 )
             setattr(self, f"_fsk_dep_{i}", dep)
-            code_lines.append(f"    {branch} op == {2 * i}:")
-            code_lines.append(f"        r, d = cal._fsk_dep_{i}.check_own_state()")
-            code_lines.append(f"        cal._fsk_record({i}, r, d)")
-            branch = "elif"
+
+            check_lines.append(f"    {cbranch} op == {i}:")
+            check_lines.append(f"        r, d = cal._fsk_dep_{i}.check_own_state()")
+            check_lines.append(f"        cal._csk_record({i}, r, d)")
+            cbranch = "elif"
+
+            fix_lines.append(f"    {fbranch} op == {2 * i}:")
+            fix_lines.append(f"        r, d = cal._fsk_dep_{i}.check_own_state()")
+            fix_lines.append(f"        cal._fsk_record({i}, r, d)")
+            fbranch = "elif"
 
             if is_kernel(dep.fix_own_state):
                 uses_default_fix.append(False)
@@ -597,11 +633,13 @@ class Calibration(ExpFragment):
                 fix_call = None
 
             if fix_call is not None:
-                code_lines.append(f"    elif op == {2 * i + 1}:")
-                code_lines.append(f"        {fix_call}")
+                fix_lines.append(f"    elif op == {2 * i + 1}:")
+                fix_lines.append(f"        {fix_call}")
 
-        code_lines.append("    op = cal._fsk_next()")
-        code_lines.append("return cal._fsk_finished()")
+        check_lines.append("    op = cal._csk_next()")
+        check_lines.append("return cal._csk_result()")
+        fix_lines.append("    op = cal._fsk_next()")
+        fix_lines.append("return cal._fsk_finished()")
 
         self._fsk_deps = deps
         self._fsk_uses_default_fix = uses_default_fix
@@ -610,23 +648,50 @@ class Calibration(ExpFragment):
         self._fsk_pending = None
         self._fsk_last_check = None
         self._fsk_failure = None
-        self._fsk_driver = kernel_from_string(["cal", "force"], "\n".join(code_lines))
+        self._fsk_driver = kernel_from_string(["cal", "force"], "\n".join(fix_lines))
+
+        self._csk_deps = deps
+        self._csk_gen = None
+        self._csk_pending = None
+        self._csk_last = (CalibrationResult.OK, 0.0)
+        self._csk_result_pair = (CalibrationResult.OK, None)
+        self._csk_driver = kernel_from_string(
+            ["cal", "force", "continue_on_fail"], "\n".join(check_lines)
+        )
+
+        self._kops_ready = True
+
+    def prepare_kernel_fix(self) -> None:
+        """Deprecated alias for :meth:`prepare_kernel_ops`."""
+        self.prepare_kernel_ops()
 
     @kernel
-    def fix_state_kernel(self, force) -> TBool:
+    def fix_state_kernel(self, force=False) -> TBool:
         """Kernel-callable :meth:`fix_state`: fix this Calibration and all its
         dependencies from within a single kernel.
 
-        The DAG walk decisions and the optimizer strategies run on the host,
-        reached purely by RPC; all measurements and fixes execute in this
-        kernel, so the entire fix costs one compile + one upload. Call
-        :meth:`prepare_kernel_fix` on the host first.
+        For a kernel-mode calibration this *is* :meth:`fix_state`. The DAG
+        walk decisions and the optimizer strategies run on the host, reached
+        purely by RPC; all measurements and fixes execute in this kernel, so
+        the entire fix costs one compile + one upload.
 
-        Returns True if every calibration ended up OK. Unlike
+        Returns True if every calibration ended up OK. Unlike the host
         :meth:`fix_state` this cannot raise on failure — check the return
         value (the failure reason is logged and left in ``_fsk_failure``).
         """
         return self._fsk_driver(self, force)
+
+    @kernel
+    def check_state_kernel(self, force=False, continue_on_fail=False):
+        """Kernel-callable :meth:`check_state`: check this Calibration and its
+        dependencies from within a single kernel, returning ``(result, data)``.
+
+        For a kernel-mode calibration this *is* :meth:`check_state`. The walk
+        decisions run on the host over RPC; every check_own_state runs in this
+        kernel, so the whole check costs one compile + one upload. ``result``
+        is the combined :class:`CalibrationResult` as an int (0 == OK).
+        """
+        return self._csk_driver(self, force, continue_on_fail)
 
     def _kopt_bind_stores(self) -> None:
         """Override the optimizable params and bind their stores for a
@@ -726,6 +791,67 @@ class Calibration(ExpFragment):
     def _fsk_finished(self) -> TBool:
         """RPC: True if the kernel-driven fix left everything OK."""
         return self._fsk_failure is None
+
+    def _csk_controller_gen(self, deps, force, continue_on_fail):
+        """Mirror of :meth:`check_state`'s walk as a generator: yields the
+        node index the kernel driver should check next, receives that check's
+        recorded ``(result, data)``, and leaves the combined outcome in
+        ``_csk_result_pair``."""
+        r = CalibrationResult.OK
+        data = None
+        for i, dep in enumerate(deps):
+            current_state = dep._guess_own_state()
+            if force or current_state != CalibrationResult.OK:
+                state, data = yield i
+                r |= state
+                if r != CalibrationResult.OK and not continue_on_fail:
+                    if i == len(deps) - 1:
+                        self._csk_result_pair = (r, data)
+                    else:
+                        self._csk_result_pair = (CalibrationResult.BAD_DEPS, None)
+                    return
+        self._csk_result_pair = (r, data)
+
+    @rpc
+    def _csk_begin(self, force, continue_on_fail) -> None:
+        """RPC: start a kernel-driven check walk."""
+        dag.publish_dag(self)
+        self._csk_result_pair = (CalibrationResult.OK, None)
+        self._csk_pending = None
+        self._csk_gen = self._csk_controller_gen(
+            self._csk_deps, force, continue_on_fail
+        )
+
+    @rpc
+    def _csk_next(self) -> TInt32:
+        """RPC: advance the check controller and return the next node index
+        for the kernel driver to check (-1 = finished)."""
+        try:
+            if self._csk_gen is None:
+                return -1
+            if self._csk_pending is None:
+                idx = next(self._csk_gen)
+            else:
+                self._csk_pending = None
+                idx = self._csk_gen.send(self._csk_last)
+        except StopIteration:
+            self._csk_gen = None
+            return -1
+        self._csk_pending = idx
+        return idx
+
+    @rpc
+    def _csk_record(self, node_idx, result, data) -> None:
+        """RPC: record a check measured by the kernel driver."""
+        result = CalibrationResult(int(result))
+        self._csk_deps[node_idx]._record_own_check(result, data)
+        self._csk_last = (result, data)
+
+    @rpc
+    def _csk_result(self) -> TTuple([TInt32, TFloat]):
+        """RPC: the combined ``(result, data)`` of the check walk."""
+        r, data = self._csk_result_pair
+        return (int(r), float(data) if isinstance(data, (int, float)) else 0.0)
 
     def _do_check_own_state(self) -> Tuple[CalibrationResult, Any]:
         result, data = self.check_own_state()

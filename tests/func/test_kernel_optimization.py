@@ -26,8 +26,8 @@ def test_kernel_optimizer_uses_single_kernel_call(fragment_factory, mock_core):
         optimization_calls == 1
     ), f"Expected exactly 1 kernel call for optimization, got {optimization_calls}"
 
-    # Verify the calibration is now OK
-    result, data = c.check_state()
+    # Verify the calibration is now OK (direct kernel check)
+    result, data = c.check_own_state()
     assert result == CalibrationResult.OK
 
 
@@ -38,8 +38,8 @@ def test_kernel_optimizer_finds_optimum(fragment_factory):
 
     c.fix_own_state()
 
-    # The optimum is at 7.0; check_state should now pass
-    result, data = c.check_state()
+    # The optimum is at 7.0; the direct kernel check should now pass
+    result, data = c.check_own_state()
     assert result == CalibrationResult.OK
 
 
@@ -55,7 +55,7 @@ def test_kernel_feedback_optimizer_single_kernel_call(fragment_factory, mock_cor
 
     assert mock_core.call_count - initial_calls == 1
 
-    result, data = c.check_state()
+    result, data = c.check_own_state()
     assert result == CalibrationResult.OK
 
 
