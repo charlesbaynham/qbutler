@@ -558,12 +558,19 @@ class Calibration(ExpFragment):
         and the parameter stores they reference are embedded into the kernel
         at compile time.
 
-        Every calibration in the dependency tree must have a ``@kernel``
-        ``check_own_state`` returning a float "data" value. Nodes are fixed
-        with either a ``@kernel`` ``fix_own_state`` override or the default
-        optimizer fix (which requires optimizable params); a node with
-        neither is check-only, and a fix fails if it is found broken. The
-        optimizer strategies run on the host and are reached by RPC.
+        A dependency with a ``@kernel`` ``check_own_state`` (returning a float
+        "data" value) is measured in the resident kernel. A dependency with a
+        host-only ``check_own_state`` is not embedded in the kernel driver at
+        all: it is checked and fixed on the host by the controller generators,
+        reached synchronously from inside the ``_csk_next`` / ``_fsk_next``
+        RPCs the kernel already blocks on. So a kernel primary may depend on a
+        mixture of kernel and host-only calibrations.
+
+        Kernel-checked nodes are fixed with either a ``@kernel``
+        ``fix_own_state`` override or the default optimizer fix (which requires
+        optimizable params); a node with neither is check-only, and a fix
+        fails if it is found broken. The optimizer strategies run on the host
+        and are reached by RPC.
 
         The optimizable params of default-fix nodes are overridden for the
         lifetime of the fragment (their stores must outlive any one fix, as
@@ -573,12 +580,22 @@ class Calibration(ExpFragment):
             return
 
         deps = dag.get_dependencies(self)
+        is_kernel_check = []
         uses_default_fix = []
         fixable = []
 
-        # Two drivers over the same deps: the check driver runs check_own_state
-        # per node (op == i); the fix driver interleaves check (op == 2i) and
-        # fix (op == 2i+1) ops. The host controllers decide which ops fire.
+        # Two drivers over the kernel-checked deps: the check driver runs
+        # check_own_state per node (op == i); the fix driver interleaves check
+        # (op == 2i) and fix (op == 2i+1) ops. The host controllers decide
+        # which ops fire.
+        #
+        # Deps whose check_own_state is host-only are not embedded in either
+        # driver. A kernel-mode calibration reaches them through the ordinary
+        # host walk, run synchronously inside the controller RPCs
+        # (_csk_next / _fsk_next) that the kernel already blocks on. So a
+        # kernel primary can depend on a mixture of kernel and host-only
+        # calibrations: the kernel-checked nodes are measured in the resident
+        # kernel, the host-only nodes over synchronous RPC.
         check_lines = [
             "cal._csk_begin(force, continue_on_fail)",
             "op = cal._csk_next()",
@@ -592,11 +609,22 @@ class Calibration(ExpFragment):
         cbranch = "if"
         fbranch = "if"
         for i, dep in enumerate(deps):
-            if not is_kernel(dep.check_own_state):
-                raise CalibrationError(
-                    f"{dep.__class__.__name__}.check_own_state must be a "
-                    "kernel for a kernel-driven check/fix"
+            kernel_check = is_kernel(dep.check_own_state)
+            is_kernel_check.append(kernel_check)
+
+            if not kernel_check:
+                # Host-only node: checked and fixed on the host by the
+                # controller generators, never embedded in the kernel driver.
+                # It is fixable if it has any fix at all — an overridden
+                # fix_own_state (host or kernel) or optimizable params for the
+                # default optimizer.
+                uses_default_fix.append(False)
+                fixable.append(
+                    type(dep).fix_own_state is not Calibration.fix_own_state
+                    or len(dep._Calibration__optimizable_params) > 0
                 )
+                continue
+
             setattr(self, f"_fsk_dep_{i}", dep)
 
             check_lines.append(f"    {cbranch} op == {i}:")
@@ -642,6 +670,7 @@ class Calibration(ExpFragment):
         fix_lines.append("return cal._fsk_finished()")
 
         self._fsk_deps = deps
+        self._fsk_is_kernel = is_kernel_check
         self._fsk_uses_default_fix = uses_default_fix
         self._fsk_fixable = fixable
         self._fsk_gen = None
@@ -651,6 +680,7 @@ class Calibration(ExpFragment):
         self._fsk_driver = kernel_from_string(["cal", "force"], "\n".join(fix_lines))
 
         self._csk_deps = deps
+        self._csk_is_kernel = is_kernel_check
         self._csk_gen = None
         self._csk_pending = None
         self._csk_last = (CalibrationResult.OK, 0.0)
@@ -711,6 +741,13 @@ class Calibration(ExpFragment):
         ("check"/"fix", node_idx) ops for the kernel driver and receives the
         recorded (result, data) of each check."""
         for i, dep in enumerate(deps):
+            if not self._fsk_is_kernel[i]:
+                # Host-only node: check and fix it synchronously on the host,
+                # inside this controller RPC — exactly the plain fix_state
+                # walk. The kernel driver never sees this node.
+                self._fsk_host_fix_node(dep, fixable[i], force)
+                continue
+
             current_state = dep._guess_own_state()
 
             if current_state & CalibrationResult.BAD_EXPIRED and not force:
@@ -732,6 +769,32 @@ class Calibration(ExpFragment):
                     raise CalibrationError(
                         f"Calibration of {dep.__class__.__name__} failed"
                     )
+
+    def _fsk_host_fix_node(self, dep, fixable, force) -> None:
+        """Check and, if needed, fix one host-only dependency of a kernel-mode
+        calibration. Runs entirely on the host, called from inside the
+        synchronous ``_fsk_next`` RPC while the resident kernel blocks."""
+        current_state = dep._guess_own_state()
+
+        if current_state & CalibrationResult.BAD_EXPIRED and not force:
+            current_state, _ = dep._do_check_own_state()
+
+        if current_state != CalibrationResult.OK or force:
+            if not fixable:
+                raise CalibrationError(
+                    f"Calibration {dep.__class__.__name__} needs fixing "
+                    "but has no fix"
+                )
+            dep.fix_own_state()
+            current_state, current_data = dep._do_check_own_state()
+
+            if current_state != CalibrationResult.OK:
+                self.__most_recent_check_result = CalibrationResult.BAD_DEPS
+                self.__most_recent_check_timestamp = time()
+                self.__most_recent_check_data = current_data
+                raise CalibrationError(
+                    f"Calibration of {dep.__class__.__name__} failed"
+                )
 
     @rpc
     def _fsk_begin(self, force) -> None:
@@ -802,7 +865,12 @@ class Calibration(ExpFragment):
         for i, dep in enumerate(deps):
             current_state = dep._guess_own_state()
             if force or current_state != CalibrationResult.OK:
-                state, data = yield i
+                if self._csk_is_kernel[i]:
+                    state, data = yield i
+                else:
+                    # Host-only node: measure synchronously on the host,
+                    # inside this controller RPC. The kernel never sees it.
+                    state, data = dep._do_check_own_state()
                 r |= state
                 if r != CalibrationResult.OK and not continue_on_fail:
                     if i == len(deps) - 1:
