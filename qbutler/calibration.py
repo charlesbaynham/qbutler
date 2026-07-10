@@ -176,7 +176,7 @@ class Calibration(ExpFragment):
         machinery.
         """
         self.__timeout = 0
-        self.__optimizable_params = []
+        self._optimizable_params = []
         self.__optimizer_func = grid_search_optimizer  # Default optimizer, can be overridden by set_optimizer()
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
@@ -281,7 +281,7 @@ class Calibration(ExpFragment):
             *args,
             **kwargs,
         )
-        self.__optimizable_params.append(
+        self._optimizable_params.append(
             ParamSpec(name=name, min=min, max=max, handle=p)
         )
         return p
@@ -616,7 +616,7 @@ class Calibration(ExpFragment):
                     f"{dep.__class__.__name__}.fix_own_state is host-only "
                     "code, which a kernel-driven fix cannot run"
                 )
-            elif len(dep._Calibration__optimizable_params) > 0:
+            elif len(dep._optimizable_params) > 0:
                 # Default optimizer fix. Bind the stores now so they exist
                 # when the kernel is compiled.
                 dep._kopt_bind_stores()
@@ -696,7 +696,7 @@ class Calibration(ExpFragment):
         kernel-driven fix. Idempotent; must run before kernel compilation."""
         if getattr(self, "_kopt_stores", None) is not None:
             return
-        param_specs = self.__optimizable_params
+        param_specs = self._optimizable_params
         stores = {}
         for spec in param_specs:
             _, store = self.override_param(spec.name, spec.handle.get())
@@ -1030,7 +1030,7 @@ class Calibration(ExpFragment):
                 Raised if the algorithm fails to fix this Calibration.
         """
 
-        if len(self.__optimizable_params) == 0:
+        if len(self._optimizable_params) == 0:
             raise ValueError(
                 f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
             )
@@ -1039,7 +1039,7 @@ class Calibration(ExpFragment):
 
     def _run_optimizer(self, optimizer_func) -> None:
         """Run an optimizer generator against this Calibration's parameters."""
-        param_specs = self.__optimizable_params
+        param_specs = self._optimizable_params
 
         stores = {}
         for spec in param_specs:

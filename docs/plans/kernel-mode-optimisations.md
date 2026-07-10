@@ -66,7 +66,7 @@ For the non-optimising path (`check_state` single-shot, dep walks), leave the cu
 - **`qbutler/calibration.py`** (main change).
   - In `_run_optimizer` (`calibration.py:573`): detect `hasattr(self.check_own_state, "artiq_embedded")` and switch to `_run_optimizer_kernel`.
   - Add `_run_optimizer_kernel(self, optimizer_func)`:
-    - Build `ScanAxis` entries from `self.__optimizable_params` (each spec already exposes a `ParamHandle`; the `ParamStore` is reachable via `handle._store`).
+    - Build `ScanAxis` entries from `self._optimizable_params` (each spec already exposes a `ParamHandle`; the `ParamStore` is reachable via `handle._store`).
     - Build a points generator wrapping `optimizer_func(...)`'s `.send()` interface.
     - Detect optimiser batchability via `getattr(optimizer_func, "batchable", False)` (or an attribute on the generator); pass to runner as `chunk_size`.
     - Instantiate `QbutlerKernelScanRunner(self, chunk_size=...)`, run `setup` / `set_points` / `acquire`.
