@@ -98,7 +98,7 @@ class Calibration(ExpFragment):
         # kernel (check_state_kernel / fix_state_kernel), so they can be called
         # directly from a caller's @kernel run_once. Host-mode calibrations keep
         # the plain host walk. The driver behind these is built lazily by
-        # host_setup (see prepare_kernel_ops).
+        # host_setup (see _prepare_kernel_ops).
         if is_kernel(cls.check_own_state):
             cls.check_state = cls.check_state_kernel
             cls.fix_state = cls.fix_state_kernel
@@ -106,11 +106,9 @@ class Calibration(ExpFragment):
     def host_setup(self):
         super().host_setup()
         # Build the kernel drivers before this Calibration's methods are
-        # compiled into any caller's kernel. Kernel-mode only; a no-op
-        # otherwise. Idempotent, so an explicit prepare_kernel_ops() call
-        # elsewhere is harmless.
+        # compiled into any caller's kernel
         if is_kernel(self.check_own_state):
-            self.prepare_kernel_ops()
+            self._prepare_kernel_ops()
 
     def build_calibration(self):
         """
@@ -547,7 +545,7 @@ class Calibration(ExpFragment):
                         f"Calibration of {dep.__class__.__name__} failed"
                     )
 
-    def prepare_kernel_ops(self) -> None:
+    def _prepare_kernel_ops(self) -> None:
         """Build the kernel drivers behind :meth:`check_state_kernel` and
         :meth:`fix_state_kernel` (which, for a kernel-mode calibration, *are*
         :meth:`check_state` / :meth:`fix_state`).
@@ -663,7 +661,7 @@ class Calibration(ExpFragment):
 
     def prepare_kernel_fix(self) -> None:
         """Deprecated alias for :meth:`prepare_kernel_ops`."""
-        self.prepare_kernel_ops()
+        self._prepare_kernel_ops()
 
     @kernel
     def fix_state_kernel(self, force=False) -> TBool:
