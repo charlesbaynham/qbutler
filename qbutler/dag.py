@@ -85,7 +85,7 @@ def add_to_dependency_map(cal_object, dependent_cal_object):
     _dag_valid = False
 
 
-def get_dependencies(obj, furthest_first=True) -> List:
+def get_dependencies(obj, furthest_first=True) -> List[Calibration]:
     """
     Return a list of a Calibration's dependent objects, including the calibration itself
     """
