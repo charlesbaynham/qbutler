@@ -639,6 +639,12 @@ class Calibration(ExpFragment):
         fix_lines.append("    op = cal._fsk_next()")
         fix_lines.append("return cal._fsk_finished()")
 
+        logger.debug("Full generated check function:")
+        logger.debug("\n".join(check_lines))
+
+        logger.debug("Full generated fix function:")
+        logger.debug("\n".join(fix_lines))
+
         self._fsk_deps = deps
         self._fsk_uses_default_fix = uses_default_fix
         self._fsk_fixable = fixable
@@ -693,7 +699,7 @@ class Calibration(ExpFragment):
 
     def _kopt_bind_stores(self) -> None:
         """Override the optimizable params and bind their stores for a
-        kernel-driven fix. Idempotent; must run before kernel compilation."""
+        kernel-driven fix. Must run before kernel compilation."""
         if getattr(self, "_kopt_stores", None) is not None:
             return
         param_specs = self._optimizable_params
