@@ -157,32 +157,9 @@ class DagTopCalibration(Calibration):
             return CalibrationResult.BAD_DATA, data
 
 
-class KernelDagFixFragment(ExpFragment):
-    """The headline demo: a @kernel run_once that fixes a 3-deep calibration
-    DAG from within a single kernel."""
-
-    def build_fragment(self) -> None:
-        self.setattr_calibration(DagTopCalibration)
-        self.DagTopCalibration: DagTopCalibration
-        self.setattr_device("core")
-        self.fix_ok = False
-
-    def host_setup(self):
-        super().host_setup()
-        self.DagTopCalibration.prepare_kernel_fix()
-
-    @kernel
-    def run_once(self):
-        ok = self.DagTopCalibration.fix_state_kernel(False)
-        self._report(ok)
-
-    def _report(self, ok) -> None:
-        self.fix_ok = ok
-
-
 class UnfixableCalibration(Calibration):
     """A check-only kernel calibration that is always broken: no optimizable
-    params and no fix_own_state, so a kernel-driven fix must fail cleanly."""
+    params and no fix_own_state, so a fix walk must fail (raise)."""
 
     def build_calibration(self):
         self.setattr_device("core")
@@ -190,26 +167,6 @@ class UnfixableCalibration(Calibration):
     @kernel
     def check_own_state(self):
         return CalibrationResult.BAD_DATA, 0.0
-
-
-class KernelDagUnfixableFragment(ExpFragment):
-    def build_fragment(self) -> None:
-        self.setattr_calibration(UnfixableCalibration)
-        self.UnfixableCalibration: UnfixableCalibration
-        self.setattr_device("core")
-        self.fix_ok = True
-
-    def host_setup(self):
-        super().host_setup()
-        self.UnfixableCalibration.prepare_kernel_fix()
-
-    @kernel
-    def run_once(self):
-        ok = self.UnfixableCalibration.fix_state_kernel(False)
-        self._report(ok)
-
-    def _report(self, ok) -> None:
-        self.fix_ok = ok
 
 
 class KernelFixOwnStateCalibration(Calibration):
