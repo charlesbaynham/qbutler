@@ -14,6 +14,7 @@ import pytest
 from artiq.experiment import kernel
 from artiq.language.environment import ProcessArgumentManager
 from ndscan.experiment.entry_point import FragmentScanExperiment
+from ndscan.experiment.parameters import FloatParam
 from ndscan.utils import PARAMS_ARG_KEY
 from sipyco import pyon
 
@@ -239,3 +240,65 @@ def test_reentry_reruns_device_setup_and_first_run_guard(experiment_factory):
 
     assert exp.fragment.n_device_setup == 2
     assert exp.fragment.n_init == 2
+
+
+class RefreshClient(CalibratedExpFragment):
+    """Kernel reads a param whose dataset default a dependency's fix rewrites:
+    the post-re-entry cycle must observe the NEW value despite the precompiled
+    main kernel (compile-time-baked stores refreshed on-core at entry)."""
+
+    def build_fragment(self):
+        self.setattr_device("core")
+        self.setattr_calibration(DriftingCal)
+        self.setattr_param(
+            "t",
+            FloatParam,
+            "reads the cal's committed optimum",
+            default='dataset("DriftingCal.p", 5.0)',
+        )
+        self.seen = []
+
+    def _record(self, value):
+        self.seen.append(value)
+
+    @kernel
+    def run_once(self):
+        self._record(self.t.get())
+        self.recalibrate_if_needed()
+
+
+@pytest.mark.withartiq
+def test_precompiled_reentry_sees_committed_param(experiment_factory):
+    """Escape -> fix commits DriftingCal.p = 7.0 -> re-entry: ndscan's
+    recompute_param_defaults refreshes the HOST store, and the precompiled
+    entry's on-core refresh carries it into the baked kernel."""
+    exp = _wrap(experiment_factory, RefreshClient)
+
+    exp.run()
+
+    assert exp.fragment.seen == [pytest.approx(5.0), pytest.approx(7.0)]
+
+
+@pytest.mark.withartiq
+def test_main_kernel_compiled_once_across_escape(experiment_factory):
+    """Timing evidence: one escape means two kernel entries but exactly one
+    compile of the main kernel entry (re-entry redeploys the artifact)."""
+    exp = _wrap(experiment_factory, RefreshClient)
+
+    core = exp.fragment.core
+    original_compile = core.compile
+    compiled_names = []
+
+    def counting_compile(function, *args, **kwargs):
+        compiled_names.append(getattr(function, "__name__", "?"))
+        return original_compile(function, *args, **kwargs)
+
+    core.compile = counting_compile
+    try:
+        exp.run()
+    finally:
+        core.compile = original_compile
+
+    assert len(exp.fragment.seen) == 2  # entered twice (one escape)
+    assert compiled_names.count("_entry") == 1
+    assert compiled_names.count("_run_continuous_kernel") == 0

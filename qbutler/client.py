@@ -38,12 +38,17 @@ import logging
 from contextlib import suppress
 
 from artiq.experiment import TBool
+from artiq.experiment import TFloat
+from artiq.experiment import TList
 from artiq.experiment import kernel
 from artiq.experiment import rpc
 from artiq.language.core import TerminationRequested
 from ndscan.experiment import ExpFragment
 from ndscan.experiment.entry_point import FragmentScanExperiment
 from ndscan.experiment.entry_point import get_class_pretty_name
+from ndscan.experiment.parameters import FloatParamStore
+from ndscan.experiment.parameters import ParamHandle
+from ndscan.experiment.utils import is_kernel
 
 from . import dag
 from .calibration import Calibration
@@ -155,6 +160,13 @@ class CalibratedExpFragment(ExpFragment):
         if self._needs_recalibration():
             raise CalibrationEscape("a calibration dependency needs recalibrating")
 
+    def _ensure_cal_pool(self) -> PrecompilePool:
+        pool = getattr(self, "_cal_pool", None)
+        if pool is None:
+            pool = PrecompilePool(self.core)
+            self._cal_pool = pool
+        return pool
+
     def _arm_calibration(self):
         if getattr(self, "_cal_armed", False):
             return
@@ -170,9 +182,7 @@ class CalibratedExpFragment(ExpFragment):
             if node is not target:
                 node.host_setup()
 
-        pool = PrecompilePool(self.core)
-        self._cal_pool = pool
-        target.seed_precompile_pool(pool)
+        target.seed_precompile_pool(self._ensure_cal_pool())
         self._cal_armed = True
 
     def _resolve_target(self) -> Calibration:
@@ -206,6 +216,98 @@ class CalibratedExpFragment(ExpFragment):
             if node._guess_own_state() != CalibrationResult.OK:
                 return True
         return False
+
+
+def _collect_float_stores(fragment) -> list:
+    """Every FloatParamStore bound to a handle in the attached fragment tree.
+
+    These are the stores the main kernel can read; the precompiled entry
+    refreshes exactly this list on-core at each (re-)entry. Detached
+    subfragments (the calibration nodes) are excluded — their kernels are
+    separate pool artifacts with their own refresh
+    (:meth:`~qbutler.calibration.Calibration._check_with_current_params`).
+    Float only: committed calibration values are FloatParams
+    (``setattr_param_optimizable`` supports nothing else), and float params
+    are also the ones that pick up dataset defaults a fix rewrites.
+    """
+    stores = []
+    seen = set()
+
+    def visit(frag):
+        for value in vars(frag).values():
+            if isinstance(value, ParamHandle):
+                store = getattr(value, "_store", None)
+                if isinstance(store, FloatParamStore) and id(store) not in seen:
+                    seen.add(id(store))
+                    stores.append(store)
+        for sub in frag._subfragments:
+            if sub in frag._detached_subfragments:
+                continue
+            visit(sub)
+
+    visit(fragment)
+    return stores
+
+
+class _PrecompiledContinuousEntry:
+    """A precompiled stand-in for ndscan's ``TopLevelRunner._run_continuous_kernel``.
+
+    Bound as an instance attribute on the runner, so ``_run_continuous``'s
+    ``self._run_continuous_kernel()`` (entry_point.py) deploys a ready
+    artifact (~0.24 s) instead of recompiling the kernel entry (~16 s) on
+    every escape re-entry.
+
+    Parameter freshness: ndscan already refreshes the *host* stores from
+    datasets on every re-entry (``recompute_param_defaults`` at the top of
+    ``_run_continuous``), but a precompiled kernel's embedded store copies
+    stay at their compile-time values. So the entry kernel first pulls the
+    current host values over one RPC and applies them on-core via the stores'
+    ``@portable set_value`` — the same mechanism ndscan's kernel scans use to
+    apply per-point values (``scan_runner.py`` ``param_store.set_value``) —
+    then runs ndscan's own ``_continuous_loop``.
+
+    One deliberate semantic shift versus the recompiling path: the loop's
+    transitory-error/underflow counters restart from their compile-time zeros
+    on each entry, so the retry budget is per-entry rather than cumulative.
+    """
+
+    def __init__(self, tlr, pool):
+        self.core = tlr.core
+        self.tlr = tlr
+        self._pool = pool
+        self._float_stores = _collect_float_stores(tlr.fragment)
+        self._key = (self, "main")
+        # _continuous_loop reads/writes these, but ndscan only creates them
+        # when _run_continuous starts — after our background compile may have
+        # embedded the runner. Pre-create them so the compile can type them
+        # (ndscan re-initialises them itself before every run).
+        tlr._point_phase = False
+        tlr.num_current_transitory_errors = 0
+        tlr.num_current_underflows = 0
+        # The ARTIQ compiler cannot type an empty embedded list; skip the
+        # refresh machinery entirely for a param-less tree.
+        entry = self._entry if self._float_stores else self._entry_no_params
+        pool.seed(self._key, entry)
+
+    def __call__(self):
+        return self._pool.get(self._key)()
+
+    @rpc
+    def _current_values(self) -> TList(TFloat):
+        return [float(store.get_value()) for store in self._float_stores]
+
+    @kernel
+    def _entry(self):
+        self.core.reset()
+        values = self._current_values()
+        for i in range(len(self._float_stores)):
+            self._float_stores[i].set_value(values[i])
+        return self.tlr._continuous_loop()
+
+    @kernel
+    def _entry_no_params(self):
+        self.core.reset()
+        return self.tlr._continuous_loop()
 
 
 def make_calibrated_experiment(
@@ -251,6 +353,19 @@ def make_calibrated_experiment(
                 max_rtio_underflow_retries=max_rtio_underflow_retries,
                 max_transitory_error_retries=max_transitory_error_retries,
             )
+
+        def prepare(self):
+            super().prepare()
+            fragment = self.fragment
+            scanned = self.tlr.spec.axes and not self.tlr._is_time_series
+            if is_kernel(fragment.run_once) and not scanned:
+                # Seed the main kernel into the pool FIRST (node kernels are
+                # seeded later, at host_setup) so the background compile that
+                # the first entry blocks on is the main one, and node compiles
+                # overlap the first run.
+                self.tlr._run_continuous_kernel = _PrecompiledContinuousEntry(
+                    self.tlr, fragment._ensure_cal_pool()
+                )
 
         def run(self):
             if self.tlr.spec.axes and not self.tlr._is_time_series:
