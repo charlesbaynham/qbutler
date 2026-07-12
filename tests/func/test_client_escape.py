@@ -1,4 +1,4 @@
-"""End-to-end: a CalibratedExperiment escapes from its kernel for a
+"""End-to-end: a CalibratedExpFragment escapes from its kernel for a
 recalibration and re-enters the precompiled main kernel.
 
 Needs the ARTIQ emulator. The custom-exception escape is raised inside a real
@@ -14,7 +14,7 @@ from artiq.experiment import kernel
 from qbutler import dag
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
-from qbutler.client import CalibratedExperiment
+from qbutler.client import CalibratedExpFragment
 from qbutler.client import make_calibrated_experiment
 
 
@@ -46,7 +46,7 @@ class DriftingCal(Calibration):
         return CalibrationResult.BAD_DATA, data
 
 
-class EscapingClient(CalibratedExperiment):
+class EscapingClient(CalibratedExpFragment):
     def build_fragment(self):
         self.setattr_device("core")
         self.setattr_calibration(DriftingCal)
@@ -95,6 +95,51 @@ def test_target_auto_discovered(fragment_factory):
     client = fragment_factory(EscapingClient)
     client.host_setup()
     assert client._cal_target is client.DriftingCal
+    client.host_cleanup()
+
+
+class GuardedClient(CalibratedExpFragment):
+    """A client with a shot-to-shot first-run guard and a device_setup counter,
+    to pin the re-entry contract."""
+
+    def build_fragment(self):
+        self.setattr_device("core")
+        self.setattr_calibration(DriftingCal)
+        self.first_run = True
+        self.n_init = 0
+        self.n_device_setup = 0
+
+    def _count_device_setup(self):
+        self.n_device_setup += 1
+
+    def _count_init(self):
+        self.n_init += 1
+
+    @kernel
+    def device_setup(self):
+        self._count_device_setup()
+
+    @kernel
+    def run_once(self):
+        if self.first_run:
+            self._count_init()
+            self.first_run = False
+        self.recalibrate_if_needed()
+
+
+@pytest.mark.withartiq
+def test_reentry_reruns_device_setup_and_first_run_guard(fragment_factory):
+    """The re-entry contract: after one escape the main kernel restarts from
+    the top — device_setup runs again, and the first-run guard RE-TRIGGERS
+    (attributes restart from their compile-time-baked values, so the guard is
+    True again), re-running persisted-state initialisation after the detour."""
+    client = fragment_factory(GuardedClient)
+    client.host_setup()
+
+    client.run_calibrated()
+
+    assert client.n_device_setup == 2
+    assert client.n_init == 2
     client.host_cleanup()
 
 

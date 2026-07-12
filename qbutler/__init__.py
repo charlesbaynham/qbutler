@@ -19,7 +19,7 @@ try:
     from .calibration import CalibrationError
     from .calibration import CalibrationEscape
     from .calibration import CalibrationResult
-    from .client import CalibratedExperiment
+    from .client import CalibratedExpFragment
     from .client import make_calibrated_experiment
     from .precompile import PrecompilePool
 
@@ -28,7 +28,7 @@ try:
         "CalibrationError",
         "CalibrationEscape",
         "CalibrationResult",
-        "CalibratedExperiment",
+        "CalibratedExpFragment",
         "make_calibrated_experiment",
         "PrecompilePool",
     ]

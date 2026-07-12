@@ -1,6 +1,6 @@
 """The physicist-facing entry point for a calibration-aware experiment.
 
-Subclass :class:`CalibratedExperiment`, attach the top calibration of your DAG,
+Subclass :class:`CalibratedExpFragment`, attach the top calibration of your DAG,
 and write a ``@kernel run_once``. Somewhere at a scan-point boundary, call
 ``self.recalibrate_if_needed()``: if a dependency has drifted, the experiment
 transparently pauses, recalibrates on the host (running the precompiled per-node
@@ -10,9 +10,9 @@ background precompilation, the escape/re-enter loop, teardown — is automatic.
 Minimal client::
 
     from artiq.experiment import kernel
-    from qbutler import CalibratedExperiment
+    from qbutler import CalibratedExpFragment
 
-    class EnsureBlueMOT(CalibratedExperiment):
+    class EnsureBlueMOT(CalibratedExpFragment):
         def build_fragment(self):
             self.setattr_device("core")
             self.setattr_calibration(BlueMOTCalibration)
@@ -77,12 +77,28 @@ def drive_with_recalibration(main, fix, max_recalibrations, describe=""):
     )
 
 
-class CalibratedExperiment(ExpFragment):
+class CalibratedExpFragment(ExpFragment):
     """An ``ExpFragment`` that keeps its calibration DAG healthy while it runs.
+
+    Named for what it is: this subclasses an ndscan *Fragment* — it is NOT an
+    ARTIQ ``Experiment``, and cannot be scheduled directly. Wrap it with
+    :func:`make_calibrated_experiment` (whose output *is* an experiment) or
+    drive it from another fragment.
 
     Override ``build_fragment`` (attach a calibration) and ``run_once`` (your
     science, ideally a ``@kernel``). Call :meth:`recalibrate_if_needed` from the
     kernel wherever a recalibration would be safe.
+
+    **Re-entry contract (guaranteed semantics).** After a
+    :class:`~qbutler.calibration.CalibrationEscape`, re-entry restarts the main
+    kernel FROM THE TOP: ``device_setup()`` runs again, then ``run_once()``
+    (and ``device_cleanup()`` runs on every exit, escape included). Precompiled
+    kernels also start every entry from their compile-time-baked attribute
+    values (``attribute_writeback=False``), so a shot-to-shot first-run guard
+    (e.g. ``self.first_run = False`` after initialising an oracle) RE-TRIGGERS
+    on every kernel entry. This is deliberate and required: the calibration
+    detour may have changed exactly what those persisted variables assume, so
+    persisted-state initialisation must re-run after it.
 
     Class attributes you may override:
         calibration_target: The top :class:`~qbutler.calibration.Calibration` of
@@ -119,6 +135,18 @@ class CalibratedExperiment(ExpFragment):
         """
         if self._needs_recalibration():
             raise CalibrationEscape("a calibration dependency needs recalibrating")
+
+    @kernel
+    def _calibrated_main(self):
+        """The precompiled main kernel: the fragment's full lifecycle, so every
+        (re-)entry restarts from the top — device_setup runs again after a
+        calibration detour (the re-entry contract), and device_cleanup runs on
+        every exit, escape included. Mirrors ndscan's _FragmentRunner._run."""
+        self.device_setup()
+        try:
+            self.run_once()
+        finally:
+            self.device_cleanup()
 
     def run_calibrated(self):
         """Host driver: run the precompiled main kernel, recalibrating and
@@ -158,7 +186,7 @@ class CalibratedExperiment(ExpFragment):
         # Seed the main kernel first — it runs before any escape, so it is the
         # first artifact needed.
         if is_kernel(self.run_once):
-            pool.seed((self, "main"), self.run_once)
+            pool.seed((self, "main"), self._calibrated_main)
         target.seed_precompile_pool(pool)
         self._cal_armed = True
 
@@ -206,21 +234,21 @@ class CalibratedExperiment(ExpFragment):
 
 
 def make_calibrated_experiment(fragment_class):
-    """Wrap a :class:`CalibratedExperiment` as a runnable standalone experiment.
+    """Wrap a :class:`CalibratedExpFragment` as a runnable standalone experiment.
 
     The one module-level line that turns a client fragment into something the
     ARTIQ dashboard can schedule — the analogue of ndscan's
     ``make_fragment_scan_exp`` for the "ensure calibrated, then run once"
-    case. It drives the fragment through :meth:`CalibratedExperiment.run_calibrated`,
+    case. It drives the fragment through :meth:`CalibratedExpFragment.run_calibrated`,
     so the escape/recalibrate/re-enter loop is applied automatically::
 
         EnsureBlueMOT = make_calibrated_experiment(EnsureBlueMOTFrag)
     """
     from artiq.experiment import EnvExperiment
 
-    class _CalibratedExperimentRunner(EnvExperiment):
+    class _CalibratedExpFragmentRunner(EnvExperiment):
         def build(self):
-            self.frag: CalibratedExperiment = fragment_class(self, [])
+            self.frag: CalibratedExpFragment = fragment_class(self, [])
 
         def prepare(self):
             self.frag.init_params()
@@ -233,6 +261,6 @@ def make_calibrated_experiment(fragment_class):
             finally:
                 self.frag.host_cleanup()
 
-    _CalibratedExperimentRunner.__name__ = fragment_class.__name__ + "Experiment"
-    _CalibratedExperimentRunner.__qualname__ = _CalibratedExperimentRunner.__name__
-    return _CalibratedExperimentRunner
+    _CalibratedExpFragmentRunner.__name__ = fragment_class.__name__ + "Experiment"
+    _CalibratedExpFragmentRunner.__qualname__ = _CalibratedExpFragmentRunner.__name__
+    return _CalibratedExpFragmentRunner
