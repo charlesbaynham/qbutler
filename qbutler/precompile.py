@@ -14,6 +14,37 @@ calibrations. Compiles run sequentially on one worker thread, which is safe
 against a concurrently-running kernel *only* for kernels with no subkernels
 (``Core.precompile``'s compile path touches no ``comm`` state in that case). Every
 calibration measurement kernel here is single-core, so this holds; CI guards it.
+
+Thread-safety against the worker↔master pipe
+--------------------------------------------
+
+In an ARTIQ worker, ``ddb.get`` / dataset access are *parent actions*: an
+unlocked write-request/read-reply pair on one line-JSON pipe
+(``artiq/master/worker_impl.py`` ``put_object``/``get_object`` /
+``make_parent_action``). The compiler hits this per quoted function —
+``embedding.py`` ``_quote_function`` does ``self.dmgr.get(core_name)``, and
+``DeviceManager.get`` re-fetches the description over the pipe on *every* call,
+even for an already-active device. A background compile therefore interleaves
+its request/reply lines with the main thread's dataset traffic and each thread
+reads the other's reply (rig-observed as ``JSONDecodeError`` inside
+``pyon.decode`` → ``DeviceError: Failed to get description of device 'core'``,
+RID 77452).
+
+The pool removes every pipe touch from the compile thread: at construction (on
+the caller's thread) it snapshots the whole device db — one ``get_device_db``
+transaction — and rebinds ``core.dmgr.ddb`` to a read-only
+:class:`_SnapshotDeviceDB` serving ``get``/``get_desc`` locally (aliases
+resolved against the snapshot). Device *instantiation* stays a main-thread
+affair: a pool-thread lookup that is not already an active/virtual device
+raises instead of creating one. Residual compile-thread pipe touches: none —
+the compile path is pure compute plus the (now snapshot-served) desc lookups;
+subkernel upload never runs (no-subkernel precondition above); worker log
+records, including a multi-KB failure traceback from the pool thread, go to
+stderr via the single lock-serialised ``StreamHandler`` installed by sipyco's
+``multiline_log_config`` — a different fd from the IPC pipe, with no other
+stderr writer to interleave with. Belt-and-braces, constructing a pool inside a
+worker also installs :func:`qbutler.worker_ipc_lock.install_worker_ipc_lock`,
+which makes every residual parent put+get pair atomic under one RLock.
 """
 
 import logging
@@ -23,7 +54,79 @@ from typing import Any
 from typing import Callable
 from typing import Hashable
 
+from .worker_ipc_lock import install_worker_ipc_lock
+
 logger = logging.getLogger(__name__)
+
+
+class _SnapshotDeviceDB:
+    """A read-only device db serving lookups from an in-process snapshot.
+
+    Drop-in for the worker's ``ParentDeviceDB`` (and the master's ``DeviceDB``)
+    on the read paths ``DeviceManager`` uses — ``get(key, resolve_alias=...)``,
+    ``get_device_db()``, ``get_satellite_cpu_target`` — with no pipe IPC ever.
+    """
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def get_device_db(self) -> dict:
+        return self._data
+
+    def get(self, key, resolve_alias=False):
+        try:
+            desc = self._data[key]
+        except KeyError:
+            raise KeyError(
+                f"Device '{key}' is not in the device-db snapshot taken at "
+                "PrecompilePool construction; if the device db changed "
+                "mid-run, rebuild the pool"
+            ) from None
+        if resolve_alias:
+            while isinstance(desc, str):
+                desc = self._data[desc]
+        return desc
+
+    def get_satellite_cpu_target(self, destination):
+        return self._data["satellite_cpu_targets"][destination]
+
+
+def _install_pipe_free_desc_lookups(core) -> None:
+    """Rebind ``core.dmgr.ddb`` to a snapshot so desc lookups (from any thread)
+    stop transacting on the worker↔master pipe.
+
+    Idempotent; call on the thread that owns the pipe (the main thread). Also
+    guards against a compile-thread lookup instantiating a device: devices are
+    built on the main thread during build(), so a pool-thread ``dmgr.get`` must
+    only ever find an existing active/virtual device.
+    """
+    dmgr = getattr(core, "dmgr", None)
+    ddb = getattr(dmgr, "ddb", None)
+    if ddb is None or isinstance(ddb, _SnapshotDeviceDB):
+        return
+    dmgr.ddb = _SnapshotDeviceDB(ddb.get_device_db())
+
+    if getattr(dmgr, "_qbutler_thread_guard", False):
+        return
+    owner = threading.current_thread()
+    orig_get = dmgr.get
+
+    def guarded_get(name, *args, **kwargs):
+        if threading.current_thread() is not owner:
+            virtual = getattr(dmgr, "virtual_devices", {})
+            active = getattr(dmgr, "active_devices", [])
+            if name not in virtual:
+                desc = dmgr.ddb.get(name, resolve_alias=True)
+                if not any(desc == d for d, _ in active):
+                    raise RuntimeError(
+                        f"Device '{name}' is not active: a compile-thread "
+                        "lookup would instantiate it. Devices must be created "
+                        "on the main thread during build()"
+                    )
+        return orig_get(name, *args, **kwargs)
+
+    dmgr.get = guarded_get
+    dmgr._qbutler_thread_guard = True
 
 
 class PrecompilePool:
@@ -39,6 +142,11 @@ class PrecompilePool:
     """
 
     def __init__(self, core: Any):
+        # Both must happen on the caller's (pipe-owning) thread, before the
+        # worker thread exists: see "Thread-safety" in the module docstring.
+        _install_pipe_free_desc_lookups(core)
+        install_worker_ipc_lock()
+
         self._core = core
         self._specs: dict[Hashable, tuple] = {}
         self._results: dict[Hashable, Callable] = {}
