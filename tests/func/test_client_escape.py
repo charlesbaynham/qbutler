@@ -148,6 +148,9 @@ def test_standalone_entry_point_runs(experiment_factory):
     """The exact physicist-usage path: make_calibrated_experiment(...).run()."""
     Experiment = make_calibrated_experiment(EscapingClient)
     exp = experiment_factory(Experiment)
+    # Construction is deferred out of the build action (absolute 15 s master
+    # budget, rig RIDs 77458/77459) into prepare, which has no deadline.
+    assert not hasattr(exp, "frag")
     exp.prepare()
     exp.run()
     assert exp.frag.n_runs == 2

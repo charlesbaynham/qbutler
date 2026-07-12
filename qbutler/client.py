@@ -41,6 +41,7 @@ from .calibration import CalibrationError
 from .calibration import CalibrationEscape
 from .calibration import CalibrationResult
 from .precompile import PrecompilePool
+from .worker_ipc_lock import install_worker_ipc_lock
 
 logger = logging.getLogger(__name__)
 
@@ -243,14 +244,26 @@ def make_calibrated_experiment(fragment_class):
     so the escape/recalibrate/re-enter loop is applied automatically::
 
         EnsureBlueMOT = make_calibrated_experiment(EnsureBlueMOTFrag)
+
+    The fragment tree is constructed in ``prepare()``, not ``build()``: the
+    master gives the worker's build action an absolute 15 s budget
+    (``Worker.build`` ``timeout=15.0``; the deadline is fixed when the action
+    starts and worker↔master traffic does not extend it — rig RIDs
+    77458/77459), while prepare has no deadline at all. A client whose
+    construction is expensive — e.g. two calibration targets each building a
+    full measurement chain — must therefore not build during the build action.
     """
     from artiq.experiment import EnvExperiment
 
     class _CalibratedExpFragmentRunner(EnvExperiment):
         def build(self):
-            self.frag: CalibratedExpFragment = fragment_class(self, [])
+            # Deliberately near-empty: see the 15 s build budget above. The
+            # IPC transaction lock is installed here, the earliest worker
+            # entry point, so it precedes any thread qbutler ever starts.
+            install_worker_ipc_lock()
 
         def prepare(self):
+            self.frag: CalibratedExpFragment = fragment_class(self, [])
             self.frag.init_params()
             self.frag.prepare()
 
