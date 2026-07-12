@@ -580,7 +580,12 @@ class Calibration(ExpFragment):
 
         if is_kernel_check:
             self._precompile_check_key = (self, "check")
-            pool.seed(self._precompile_check_key, self.check_own_state)
+            if self._precompile_fix_key is not None:
+                # Optimized node: its committed param must reach the precompiled
+                # check at runtime (see _check_with_current_params).
+                pool.seed(self._precompile_check_key, self._check_with_current_params)
+            else:
+                pool.seed(self._precompile_check_key, self.check_own_state)
 
     def _kopt_bind_stores(self) -> None:
         """Override the optimizable params and bind their stores for a
@@ -980,6 +985,28 @@ class Calibration(ExpFragment):
         for spec in param_specs:
             self.reset_param(spec.name)
         self.recompute_param_defaults()
+
+    @rpc
+    def _kopt_load_current(self) -> TList(TFloat):
+        """RPC: the optimizable params' current host values (the committed
+        optimum after a fix, or the default before one)."""
+        return [float(store.get_value()) for store in self._kopt_stores]
+
+    @kernel
+    def _check_with_current_params(self):
+        """Pooled check for an optimized node.
+
+        A precompiled kernel embeds object attribute values as of compile time
+        and never writes them back, so a bare precompiled ``check_own_state``
+        would keep measuring at the param value baked in when it was compiled —
+        blind to any optimum a later fix commits. So pull the current param
+        values over RPC and apply them on-core (the same ``@portable``
+        ``set_value`` the optimizer loop uses) before measuring.
+        """
+        values = self._kopt_load_current()
+        for i in range(len(self._kopt_stores)):
+            self._kopt_stores[i].set_value(values[i])
+        return self.check_own_state()
 
     @rpc
     def _kopt_first_point(self) -> TList(TFloat):
