@@ -53,6 +53,7 @@ def test_n_escapes_fix_n_times():
 
 def test_bounded_livelock_guard():
     calls, fixes = [], []
+
     # main always escapes; fix never helps
     def main():
         calls.append(1)

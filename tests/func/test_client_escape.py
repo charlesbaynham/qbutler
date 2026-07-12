@@ -33,7 +33,9 @@ class DriftingCal(Calibration):
     def build_calibration(self):
         self.setattr_device("core")
         self.set_timeout(300.0)
-        self.setattr_param_optimizable("p", "Test param", min=0.0, max=10.0, default=5.0)
+        self.setattr_param_optimizable(
+            "p", "Test param", min=0.0, max=10.0, default=5.0
+        )
 
     @kernel
     def check_own_state(self):
