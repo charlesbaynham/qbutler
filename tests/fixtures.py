@@ -19,6 +19,7 @@ from artiq.experiment import EnvExperiment
 from artiq.experiment import host_only
 from artiq.experiment import rpc
 from artiq.language.environment import ProcessArgumentManager
+from artiq.language.types import TBool
 from artiq.master.worker_db import DatasetManager
 from artiq.master.worker_db import DeviceManager
 from ndscan.experiment import Fragment
@@ -219,7 +220,7 @@ def device_mgr(mock_db_writer):
         def get_status(self):
             return dict()
 
-        def check_pause(self, rid=None):
+        def check_pause(self, rid=None) -> TBool:
             return False
 
         @host_only

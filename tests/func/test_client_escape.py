@@ -1,17 +1,24 @@
-"""End-to-end: a CalibratedExpFragment escapes from its kernel for a
-recalibration and re-enters the precompiled main kernel.
+"""End-to-end: a CalibratedExpFragment, wrapped as an ndscan scan experiment,
+escapes from its kernel for a recalibration and re-enters ndscan's run loop.
 
-Needs the ARTIQ emulator. The custom-exception escape is raised inside a real
-kernel, caught on the host by class, the DAG is fixed with pooled kernels, and
-the (precompiled) main kernel is re-entered.
+Needs the ARTIQ emulator for the kernel tests. The custom-exception escape is
+raised inside a real kernel, caught on the host by class, the DAG is fixed with
+pooled kernels, and ndscan's run loop is re-entered. The wrapper is ndscan-
+native (FragmentScanExperiment), so the same tests also pin the dashboard
+surface: PARAMS schema exposure and override processing.
 """
 
 import gc
 
 import pytest
 from artiq.experiment import kernel
+from artiq.language.environment import ProcessArgumentManager
+from ndscan.experiment.entry_point import FragmentScanExperiment
+from ndscan.utils import PARAMS_ARG_KEY
+from sipyco import pyon
 
 from qbutler import dag
+from qbutler import worker_ipc_lock
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 from qbutler.client import CalibratedExpFragment
@@ -61,33 +68,125 @@ class EscapingClient(CalibratedExpFragment):
         self.recalibrate_if_needed()
 
 
+def _wrap(experiment_factory, fragment_class):
+    exp = experiment_factory(make_calibrated_experiment(fragment_class))
+    exp.prepare()
+    return exp
+
+
+def test_wrapper_is_ndscan_native():
+    Experiment = make_calibrated_experiment(EscapingClient)
+    assert issubclass(Experiment, FragmentScanExperiment)
+    assert Experiment.__name__ == "EscapingClient"
+
+
+def test_build_installs_ipc_lock(experiment_factory):
+    """The transaction lock is armed at the earliest worker entry point,
+    before any thread qbutler ever starts."""
+    worker_ipc_lock._installed = False
+    try:
+        experiment_factory(make_calibrated_experiment(EscapingClient))  # build()
+        assert worker_ipc_lock._installed
+    finally:
+        worker_ipc_lock._installed = True
+
+
+def test_params_schema_exposes_fragment_tree(experiment_factory):
+    """The dashboard argument UI sees every parameter in the fragment tree."""
+    exp = experiment_factory(make_calibrated_experiment(EscapingClient))
+    schemata = exp.args._schemata
+    assert any(fqn.endswith("DriftingCal.p") for fqn in schemata)
+    assert any(fqn.endswith("DriftingCal.optimization_type") for fqn in schemata)
+
+
+def test_dashboard_override_reaches_fragment(device_mgr, dataset_mgr):
+    """A PARAMS override (what the dashboard editor submits) lands on the
+    fragment's parameter through ndscan's own processing."""
+    Experiment = make_calibrated_experiment(EscapingClient)
+
+    probe = Experiment((device_mgr, dataset_mgr, ProcessArgumentManager({}), None))
+    p_fqn = probe.fragment.DriftingCal._free_params["p"].fqn
+
+    params = {"overrides": {p_fqn: [{"path": "*", "value": 3.25}]}}
+    exp = Experiment(
+        (
+            device_mgr,
+            dataset_mgr,
+            ProcessArgumentManager({PARAMS_ARG_KEY: pyon.encode(params)}),
+            None,
+        )
+    )
+    exp.prepare()
+    assert exp.fragment.DriftingCal.p.get() == pytest.approx(3.25)
+
+
+def test_scan_axes_raise_not_implemented(device_mgr, dataset_mgr):
+    """No silent wrong behaviour: a scanned submission fails loudly until the
+    F6 scanned-path work lands."""
+    Experiment = make_calibrated_experiment(EscapingClient)
+
+    probe = Experiment((device_mgr, dataset_mgr, ProcessArgumentManager({}), None))
+    p_fqn = probe.fragment.DriftingCal._free_params["p"].fqn
+
+    params = {
+        "scan": {
+            "axes": [
+                {
+                    "type": "linear",
+                    "range": {
+                        "start": 0.0,
+                        "stop": 1.0,
+                        "num_points": 3,
+                        "randomise_order": False,
+                    },
+                    "fqn": p_fqn,
+                    "path": "*",
+                }
+            ],
+            "num_repeats": 1,
+            "no_axes_mode": "single",
+            "randomise_order_globally": False,
+        }
+    }
+    exp = Experiment(
+        (
+            device_mgr,
+            dataset_mgr,
+            ProcessArgumentManager({PARAMS_ARG_KEY: pyon.encode(params)}),
+            None,
+        )
+    )
+    exp.prepare()
+    with pytest.raises(NotImplementedError, match="F6"):
+        exp.run()
+
+
 @pytest.mark.withartiq
-def test_escape_fix_and_reenter(fragment_factory):
-    client = fragment_factory(EscapingClient)
-    client.host_setup()
+def test_escape_fix_and_reenter(experiment_factory):
+    exp = _wrap(experiment_factory, EscapingClient)
 
-    client.run_calibrated()
+    exp.run()
 
+    frag = exp.fragment
     # First entry escapes (cal never checked -> BAD), host fixes, re-entry is OK:
-    assert client.n_runs == 2
-    assert client.DriftingCal.p.get() == pytest.approx(7.0)
-    assert client.DriftingCal.check_state()[0] == CalibrationResult.OK
-    client.host_cleanup()
+    assert frag.n_runs == 2
+    assert frag.DriftingCal.p.get() == pytest.approx(7.0)
+    assert frag.DriftingCal.check_state()[0] == CalibrationResult.OK
 
 
 @pytest.mark.withartiq
-def test_no_escape_when_already_healthy(fragment_factory):
-    client = fragment_factory(EscapingClient)
-    client.host_setup()
+def test_no_escape_when_already_healthy(experiment_factory):
+    exp = _wrap(experiment_factory, EscapingClient)
+    frag = exp.fragment
 
     # Fix up front so the DAG is healthy before the science kernel runs.
-    client.DriftingCal.fix_state()
-    client.n_runs = 0
+    frag.host_setup()
+    frag.DriftingCal.fix_state()
+    frag.n_runs = 0
 
-    client.run_calibrated()
+    exp.run()
 
-    assert client.n_runs == 1  # ran once, no escape
-    client.host_cleanup()
+    assert frag.n_runs == 1  # ran once, no escape
 
 
 @pytest.mark.withartiq
@@ -95,7 +194,7 @@ def test_target_auto_discovered(fragment_factory):
     client = fragment_factory(EscapingClient)
     client.host_setup()
     assert client._cal_target is client.DriftingCal
-    client.host_cleanup()
+    client._shutdown_calibration()
 
 
 class GuardedClient(CalibratedExpFragment):
@@ -128,30 +227,15 @@ class GuardedClient(CalibratedExpFragment):
 
 
 @pytest.mark.withartiq
-def test_reentry_reruns_device_setup_and_first_run_guard(fragment_factory):
-    """The re-entry contract: after one escape the main kernel restarts from
-    the top — device_setup runs again, and the first-run guard RE-TRIGGERS
-    (attributes restart from their compile-time-baked values, so the guard is
-    True again), re-running persisted-state initialisation after the detour."""
-    client = fragment_factory(GuardedClient)
-    client.host_setup()
+def test_reentry_reruns_device_setup_and_first_run_guard(experiment_factory):
+    """The re-entry contract through the ndscan wrapper: after one escape the
+    main kernel restarts from the top — device_setup runs again, and the
+    first-run guard RE-TRIGGERS (an escaping kernel never writes attributes
+    back, so the guard is True again), re-running persisted-state
+    initialisation after the calibration detour."""
+    exp = _wrap(experiment_factory, GuardedClient)
 
-    client.run_calibrated()
-
-    assert client.n_device_setup == 2
-    assert client.n_init == 2
-    client.host_cleanup()
-
-
-@pytest.mark.withartiq
-def test_standalone_entry_point_runs(experiment_factory):
-    """The exact physicist-usage path: make_calibrated_experiment(...).run()."""
-    Experiment = make_calibrated_experiment(EscapingClient)
-    exp = experiment_factory(Experiment)
-    # Construction is deferred out of the build action (absolute 15 s master
-    # budget, rig RIDs 77458/77459) into prepare, which has no deadline.
-    assert not hasattr(exp, "frag")
-    exp.prepare()
     exp.run()
-    assert exp.frag.n_runs == 2
-    assert exp.frag.DriftingCal.p.get() == pytest.approx(7.0)
+
+    assert exp.fragment.n_device_setup == 2
+    assert exp.fragment.n_init == 2

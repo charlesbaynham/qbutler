@@ -4,15 +4,20 @@ Subclass :class:`CalibratedExpFragment`, attach the top calibration of your DAG,
 and write a ``@kernel run_once``. Somewhere at a scan-point boundary, call
 ``self.recalibrate_if_needed()``: if a dependency has drifted, the experiment
 transparently pauses, recalibrates on the host (running the precompiled per-node
-kernels), and re-enters your kernel where it left off. Everything else — the
-background precompilation, the escape/re-enter loop, teardown — is automatic.
+kernels), and re-enters your kernel. Everything else — the background
+precompilation, the escape/re-enter loop, teardown — is automatic.
+
+ndscan is a mandatory, load-bearing part of this: the wrapper returned by
+:func:`make_calibrated_experiment` is an ndscan ``FragmentScanExperiment``, so
+every parameter of the fragment tree is visible and overridable from the
+dashboard argument editor, exactly like any other ndscan experiment.
 
 Minimal client::
 
     from artiq.experiment import kernel
-    from qbutler import CalibratedExpFragment
+    from qbutler import CalibratedExpFragment, make_calibrated_experiment
 
-    class EnsureBlueMOT(CalibratedExpFragment):
+    class EnsureBlueMOTFrag(CalibratedExpFragment):
         def build_fragment(self):
             self.setattr_device("core")
             self.setattr_calibration(BlueMOTCalibration)
@@ -22,18 +27,23 @@ Minimal client::
             self.recalibrate_if_needed()
             # ... science ...
 
+    EnsureBlueMOT = make_calibrated_experiment(EnsureBlueMOTFrag)
+
 The only thing to declare is the calibration. If you attach exactly one it is
 found automatically; with several, set ``self.calibration_target`` to the top
 one in ``build_fragment``.
 """
 
 import logging
+from contextlib import suppress
 
 from artiq.experiment import TBool
 from artiq.experiment import kernel
 from artiq.experiment import rpc
+from artiq.language.core import TerminationRequested
 from ndscan.experiment import ExpFragment
-from ndscan.experiment.utils import is_kernel
+from ndscan.experiment.entry_point import FragmentScanExperiment
+from ndscan.experiment.entry_point import get_class_pretty_name
 
 from . import dag
 from .calibration import Calibration
@@ -47,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 
 def drive_with_recalibration(main, fix, max_recalibrations, describe=""):
-    """Call ``main`` (the precompiled science kernel), and whenever it raises
+    """Call ``main`` (the experiment's execution), and whenever it raises
     :class:`~qbutler.calibration.CalibrationEscape` run ``fix`` and re-enter.
 
     Pure host-side control flow, factored out so it can be exercised with fake
@@ -55,7 +65,8 @@ def drive_with_recalibration(main, fix, max_recalibrations, describe=""):
     non-converging calibration cannot loop forever.
 
     Args:
-        main: zero-arg callable; the precompiled main kernel.
+        main: zero-arg callable running the experiment (e.g. ndscan's
+            ``TopLevelRunner.run``).
         fix: zero-arg callable; runs the DAG fix walk (``target.fix_state``).
         max_recalibrations: max escape→fix cycles before giving up.
         describe: label used in the give-up error message.
@@ -93,13 +104,13 @@ class CalibratedExpFragment(ExpFragment):
     **Re-entry contract (guaranteed semantics).** After a
     :class:`~qbutler.calibration.CalibrationEscape`, re-entry restarts the main
     kernel FROM THE TOP: ``device_setup()`` runs again, then ``run_once()``
-    (and ``device_cleanup()`` runs on every exit, escape included). Precompiled
-    kernels also start every entry from their compile-time-baked attribute
-    values (``attribute_writeback=False``), so a shot-to-shot first-run guard
-    (e.g. ``self.first_run = False`` after initialising an oracle) RE-TRIGGERS
-    on every kernel entry. This is deliberate and required: the calibration
-    detour may have changed exactly what those persisted variables assume, so
-    persisted-state initialisation must re-run after it.
+    (and ``device_cleanup()`` runs on every exit, escape included — ndscan's
+    fragment lifecycle guarantees this). Attribute writes a kernel makes
+    before escaping are never written back to the host, so a shot-to-shot
+    first-run guard (e.g. ``self.first_run = False`` after initialising an
+    oracle) RE-TRIGGERS on re-entry. This is deliberate and required: the
+    calibration detour may have changed exactly what those persisted variables
+    assume, so persisted-state initialisation must re-run after it.
 
     Class attributes you may override:
         calibration_target: The top :class:`~qbutler.calibration.Calibration` of
@@ -118,10 +129,17 @@ class CalibratedExpFragment(ExpFragment):
         self._arm_calibration()
 
     def host_cleanup(self):
+        # The pool deliberately survives host_cleanup: ndscan tears the
+        # fragment down and re-sets it up around every pause and every escape
+        # re-entry, and the fix walk between those needs the compiled
+        # artifacts. Final teardown is _shutdown_calibration(), called by the
+        # wrapper when the experiment finishes.
+        super().host_cleanup()
+
+    def _shutdown_calibration(self):
         pool = getattr(self, "_cal_pool", None)
         if pool is not None:
             pool.shutdown()
-        super().host_cleanup()
 
     @kernel
     def recalibrate_if_needed(self):
@@ -136,36 +154,6 @@ class CalibratedExpFragment(ExpFragment):
         """
         if self._needs_recalibration():
             raise CalibrationEscape("a calibration dependency needs recalibrating")
-
-    @kernel
-    def _calibrated_main(self):
-        """The precompiled main kernel: the fragment's full lifecycle, so every
-        (re-)entry restarts from the top — device_setup runs again after a
-        calibration detour (the re-entry contract), and device_cleanup runs on
-        every exit, escape included. Mirrors ndscan's _FragmentRunner._run."""
-        self.device_setup()
-        try:
-            self.run_once()
-        finally:
-            self.device_cleanup()
-
-    def run_calibrated(self):
-        """Host driver: run the precompiled main kernel, recalibrating and
-        re-entering whenever it escapes.
-
-        This is the seam an experiment runner calls: the standalone entry point
-        (:func:`make_calibrated_experiment`) and the ndscan scan wrap both drive
-        the fragment through here. A physicist does not call it directly.
-        """
-        self._arm_calibration()
-        main = self._precompiled_main()
-        target = self._cal_target
-        drive_with_recalibration(
-            main,
-            target.fix_state,
-            self.max_recalibrations,
-            describe=f" from {type(self).__name__}",
-        )
 
     def _arm_calibration(self):
         if getattr(self, "_cal_armed", False):
@@ -184,22 +172,8 @@ class CalibratedExpFragment(ExpFragment):
 
         pool = PrecompilePool(self.core)
         self._cal_pool = pool
-        # Seed the main kernel first — it runs before any escape, so it is the
-        # first artifact needed.
-        if is_kernel(self.run_once):
-            pool.seed((self, "main"), self._calibrated_main)
         target.seed_precompile_pool(pool)
         self._cal_armed = True
-
-    def _precompiled_main(self):
-        if not is_kernel(self.run_once):
-            raise TypeError(
-                f"{type(self).__name__}.run_once must be a @kernel to be driven by "
-                "run_calibrated(). Make it a @kernel, or run this fragment as a "
-                "plain host experiment (the calibration walk still uses the "
-                "precompiled node kernels)."
-            )
-        return self._cal_pool.get((self, "main"))
 
     def _resolve_target(self) -> Calibration:
         if self.calibration_target is not None:
@@ -234,46 +208,74 @@ class CalibratedExpFragment(ExpFragment):
         return False
 
 
-def make_calibrated_experiment(fragment_class):
-    """Wrap a :class:`CalibratedExpFragment` as a runnable standalone experiment.
+def make_calibrated_experiment(
+    fragment_class,
+    *args,
+    max_rtio_underflow_retries: int = 3,
+    max_transitory_error_retries: int = 10,
+):
+    """Wrap a :class:`CalibratedExpFragment` as an ndscan scan experiment.
 
     The one module-level line that turns a client fragment into something the
-    ARTIQ dashboard can schedule — the analogue of ndscan's
-    ``make_fragment_scan_exp`` for the "ensure calibrated, then run once"
-    case. It drives the fragment through :meth:`CalibratedExpFragment.run_calibrated`,
-    so the escape/recalibrate/re-enter loop is applied automatically::
+    ARTIQ dashboard can schedule — the calibrated analogue of ndscan's
+    ``make_fragment_scan_exp``. It returns a ``FragmentScanExperiment``
+    subclass, so the wrapped client gets the full ndscan argument UI: the
+    PARAMS schema for every parameter in the fragment tree, the dashboard
+    override editor, and ndscan's parameter processing. The
+    escape/recalibrate/re-enter loop wraps ndscan's execution: on
+    :class:`~qbutler.calibration.CalibrationEscape` the host fixes the DAG
+    (precompiled node kernels) and re-enters ndscan's run loop from the top::
 
         EnsureBlueMOT = make_calibrated_experiment(EnsureBlueMOTFrag)
 
-    The fragment tree is constructed in ``prepare()``, not ``build()``: the
-    master gives the worker's build action an absolute 15 s budget
-    (``Worker.build`` ``timeout=15.0``; the deadline is fixed when the action
-    starts and worker↔master traffic does not extend it — rig RIDs
-    77458/77459), while prepare has no deadline at all. A client whose
-    construction is expensive — e.g. two calibration targets each building a
-    full measurement chain — must therefore not build during the build action.
+    Submitting with scan axes raises ``NotImplementedError`` for now: the
+    escape/re-entry semantics at scan-point boundaries are the F6 follow-up.
+    The non-scanned path (single / repeat / time series) is fully supported.
+
+    ndscan needs the fragment tree at ``build()`` time for the argument UI,
+    and the ARTIQ master gives the worker's build action an absolute 15 s
+    budget (``Worker.build`` ``timeout=15.0``, ``artiq/master/worker.py``; the
+    deadline is fixed at action start and is not extended by traffic). A
+    client whose tree construction exceeds that budget will therefore be
+    killed at submission until fragment building is made lazy (the
+    declarative-LMT laziness work, tracked separately).
     """
-    from artiq.experiment import EnvExperiment
 
-    class _CalibratedExpFragmentRunner(EnvExperiment):
+    class _CalibratedScanShim(FragmentScanExperiment):
         def build(self):
-            # Deliberately near-empty: see the 15 s build budget above. The
-            # IPC transaction lock is installed here, the earliest worker
-            # entry point, so it precedes any thread qbutler ever starts.
+            # Earliest worker entry point: the IPC transaction lock must
+            # precede any thread qbutler ever starts.
             install_worker_ipc_lock()
-
-        def prepare(self):
-            self.frag: CalibratedExpFragment = fragment_class(self, [])
-            self.frag.init_params()
-            self.frag.prepare()
+            super().build(
+                lambda: fragment_class(self, [], *args),
+                max_rtio_underflow_retries=max_rtio_underflow_retries,
+                max_transitory_error_retries=max_transitory_error_retries,
+            )
 
         def run(self):
+            if self.tlr.spec.axes and not self.tlr._is_time_series:
+                raise NotImplementedError(
+                    "Scanning a CalibratedExpFragment is not supported yet: "
+                    "escape/recalibrate re-entry at scan-point boundaries is "
+                    "the F6 follow-up. Submit without scan axes, or scan the "
+                    "bare fragment via make_fragment_scan_exp (no mid-run "
+                    "recalibration)."
+                )
+            fragment: CalibratedExpFragment = self.fragment
+            target = fragment._resolve_target()
+            name = get_class_pretty_name(fragment.__class__)
+            self.tlr.create_applet(title=f"{name} ({fragment.fqn})")
             try:
-                self.frag.host_setup()
-                self.frag.run_calibrated()
+                with suppress(TerminationRequested):
+                    drive_with_recalibration(
+                        self.tlr.run,
+                        target.fix_state,
+                        fragment.max_recalibrations,
+                        describe=f" from {type(fragment).__name__}",
+                    )
             finally:
-                self.frag.host_cleanup()
+                fragment._shutdown_calibration()
 
-    _CalibratedExpFragmentRunner.__name__ = fragment_class.__name__ + "Experiment"
-    _CalibratedExpFragmentRunner.__qualname__ = _CalibratedExpFragmentRunner.__name__
-    return _CalibratedExpFragmentRunner
+    _CalibratedScanShim.__name__ = fragment_class.__name__
+    _CalibratedScanShim.__doc__ = fragment_class.__doc__
+    return _CalibratedScanShim
