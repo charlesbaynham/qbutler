@@ -153,7 +153,7 @@ def test_no_escape_when_already_healthy(experiment_factory):
 def test_target_auto_discovered(fragment_factory):
     client = fragment_factory(EscapingClient)
     client.host_setup()
-    assert client._cal_target is client.DriftingCal
+    assert client._cal_targets == [client.DriftingCal]
     client._shutdown_calibration()
 
 
