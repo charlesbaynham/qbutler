@@ -7,6 +7,8 @@ from typing import Type
 
 import networkx as nx
 
+from . import ccb
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -20,9 +22,12 @@ DAG_DATASET = "calibrations.dag"
 def publish_dag(cal: "Calibration") -> None:
     """Best-effort publish of the DAG structure to :data:`DAG_DATASET`.
 
-    Never raises: dataset plumbing must not be able to break a calibration
-    run. ``cal`` is only used for its ``set_dataset``.
+    Also ensures the calibration-DAG overview applet exists, so the tree is
+    visualised as soon as any walk runs. Never raises: dataset plumbing must
+    not be able to break a calibration run. ``cal`` is used for its
+    ``set_dataset`` and to reach the ``ccb`` device.
     """
+    ccb.create_dag_applet(cal)
     try:
         G = _get_graph()
         nodes = sorted({type(r()).__name__ for r in G.nodes if r() is not None})

@@ -20,6 +20,7 @@ from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
 from ndscan.experiment.utils import is_kernel
 
+from . import ccb
 from . import dag
 from . import patch_ndscan  # noqa
 from .optimizers import ParamSpec
@@ -740,8 +741,11 @@ class Calibration(ExpFragment):
         """Start a fresh live trace for this optimizer run.
 
         Called at the top of every fix so an applet plots one sweep at a time.
+        Also ensures this calibration's own optimizer applet exists, so the
+        sweep is shown in a plot namespaced for this class as soon as it starts.
         Never raises: visualisation must not be able to break a calibration.
         """
+        ccb.create_optimizer_applet(self, self.__class__.__name__)
         try:
             table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
             if not isinstance(table, dict):
