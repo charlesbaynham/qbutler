@@ -7,9 +7,9 @@ resident kernel loop (kernel check_own_state) — and the per-fix reset.
 
 import pytest
 
+from qbutler.calibration import OPTIMIZER_DATASET
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
-from qbutler.calibration import OPTIMIZER_DATASET
 from qbutler.optimizers import NUM_SCAN_POINT
 from tests.func import kernel_calibrations
 

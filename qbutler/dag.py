@@ -41,6 +41,7 @@ def publish_dag(cal: "Calibration") -> None:
     except Exception:
         logger.warning("Could not publish calibration DAG", exc_info=True)
 
+
 # See docstring for add_to_dependency_map
 _dependency_map = []
 
