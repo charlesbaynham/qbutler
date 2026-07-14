@@ -59,11 +59,6 @@ def grid_search_optimizer(param_specs, num_points=NUM_SCAN_POINT):
         yield dict(zip(names, point))
 
 
-# The full point list is known up front (send() feedback is ignored), so
-# kernel-mode calibrations can evaluate the whole sweep in one kernel call.
-grid_search_optimizer.batchable = True
-
-
 def coordinate_descent_optimizer(param_specs, num_points=7, n_rounds=2):
     """Optimize one parameter at a time (a "walk-in"), using feedback.
 

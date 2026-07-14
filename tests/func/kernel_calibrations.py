@@ -97,6 +97,121 @@ KernelOptimizableCalibrationExperiment = make_fragment_scan_exp(
 )
 
 
+class DagBaseCalibration(Calibration):
+    """Deepest level of the 3-deep kernel DAG. Optimum at 2.0, default 5.0
+    (broken until fixed — the OK window excludes the default)."""
+
+    def build_calibration(self):
+        self.setattr_device("core")
+        self.setattr_param_optimizable(
+            "base_param", "Base param", min=0.0, max=10.0, default=5.0
+        )
+
+    @kernel
+    def check_own_state(self):
+        p = self.base_param.get()
+        data = 10.0 - abs(p - 2.0)
+        if data > 9.5:
+            return CalibrationResult.OK, data
+        else:
+            return CalibrationResult.BAD_DATA, data
+
+
+class DagMidCalibration(Calibration):
+    """Middle level; depends on DagBaseCalibration. Optimum at 7.0."""
+
+    def build_calibration(self):
+        self.setattr_device("core")
+        self.add_dependency(DagBaseCalibration)
+        self.setattr_param_optimizable(
+            "mid_param", "Mid param", min=0.0, max=10.0, default=3.0
+        )
+
+    @kernel
+    def check_own_state(self):
+        p = self.mid_param.get()
+        data = 10.0 - abs(p - 7.0)
+        if data > 9.5:
+            return CalibrationResult.OK, data
+        else:
+            return CalibrationResult.BAD_DATA, data
+
+
+class DagTopCalibration(Calibration):
+    """Top level; depends on DagMidCalibration. Optimum at 4.0."""
+
+    def build_calibration(self):
+        self.setattr_device("core")
+        self.add_dependency(DagMidCalibration)
+        self.setattr_param_optimizable(
+            "top_param", "Top param", min=0.0, max=10.0, default=8.0
+        )
+
+    @kernel
+    def check_own_state(self):
+        p = self.top_param.get()
+        data = 10.0 - abs(p - 4.0)
+        if data > 9.5:
+            return CalibrationResult.OK, data
+        else:
+            return CalibrationResult.BAD_DATA, data
+
+
+class KernelDagFixFragment(ExpFragment):
+    """The headline demo: a @kernel run_once that fixes a 3-deep calibration
+    DAG from within a single kernel."""
+
+    def build_fragment(self) -> None:
+        self.setattr_calibration(DagTopCalibration)
+        self.DagTopCalibration: DagTopCalibration
+        self.setattr_device("core")
+        self.fix_ok = False
+
+    def host_setup(self):
+        super().host_setup()
+        self.DagTopCalibration.prepare_kernel_fix()
+
+    @kernel
+    def run_once(self):
+        ok = self.DagTopCalibration.fix_state_kernel(False)
+        self._report(ok)
+
+    def _report(self, ok) -> None:
+        self.fix_ok = ok
+
+
+class UnfixableCalibration(Calibration):
+    """A check-only kernel calibration that is always broken: no optimizable
+    params and no fix_own_state, so a kernel-driven fix must fail cleanly."""
+
+    def build_calibration(self):
+        self.setattr_device("core")
+
+    @kernel
+    def check_own_state(self):
+        return CalibrationResult.BAD_DATA, 0.0
+
+
+class KernelDagUnfixableFragment(ExpFragment):
+    def build_fragment(self) -> None:
+        self.setattr_calibration(UnfixableCalibration)
+        self.UnfixableCalibration: UnfixableCalibration
+        self.setattr_device("core")
+        self.fix_ok = True
+
+    def host_setup(self):
+        super().host_setup()
+        self.UnfixableCalibration.prepare_kernel_fix()
+
+    @kernel
+    def run_once(self):
+        ok = self.UnfixableCalibration.fix_state_kernel(False)
+        self._report(ok)
+
+    def _report(self, ok) -> None:
+        self.fix_ok = ok
+
+
 class KernelFixOwnStateCalibration(Calibration):
     """A calibration with kernel fix_own_state."""
 

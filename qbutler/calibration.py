@@ -9,7 +9,14 @@ from typing import Optional
 from typing import Tuple
 from typing import Type
 
+from artiq.experiment import TBool
+from artiq.experiment import TFloat
+from artiq.experiment import TInt32
+from artiq.experiment import TList
+from artiq.experiment import TTuple
 from artiq.experiment import kernel
+from artiq.experiment import kernel_from_string
+from artiq.experiment import rpc
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
 from ndscan.experiment.parameters import FloatParam
@@ -28,6 +35,11 @@ logger = logging.getLogger(__name__)
 #: table, published on every check so applets and later worker processes can
 #: see calibration state.
 STATUS_DATASET = "calibrations.status"
+
+#: Broadcast dataset holding a {class_name: {param_names, points, data, status,
+#: started}} table, appended to as an optimizer walks so an applet can watch
+#: the scan happen live (see :meth:`Calibration._publish_optimizer_point`).
+OPTIMIZER_DATASET = "calibrations.optimizer"
 
 
 class CalibrationError(RuntimeError):
@@ -79,8 +91,24 @@ class Calibration(ExpFragment):
 
     """
 
-    def __repr__(self) -> str:
-        return self.__class__.__name__
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # A calibration whose own check runs on the core device is "kernel
+        # mode": its check_state / fix_state are driven from a single resident
+        # kernel (check_state_kernel / fix_state_kernel), so they can be called
+        # directly from a caller's @kernel run_once. Host-mode calibrations keep
+        # the plain host walk. The driver behind these is built lazily by
+        # host_setup (see _prepare_kernel_ops).
+        if is_kernel(cls.check_own_state):
+            cls.check_state = cls.check_state_kernel
+            cls.fix_state = cls.fix_state_kernel
+
+    def host_setup(self):
+        super().host_setup()
+        # Build the kernel drivers before this Calibration's methods are
+        # compiled into any caller's kernel
+        if is_kernel(self.check_own_state):
+            self._prepare_kernel_ops()
 
     def build_calibration(self):
         """
@@ -148,7 +176,7 @@ class Calibration(ExpFragment):
         machinery.
         """
         self.__timeout = 0
-        self.__optimizable_params = []
+        self._optimizable_params = []
         self.__optimizer_func = grid_search_optimizer  # Default optimizer, can be overridden by set_optimizer()
         self.__most_recent_check_timestamp = None
         self.__most_recent_check_result = None
@@ -253,7 +281,7 @@ class Calibration(ExpFragment):
             *args,
             **kwargs,
         )
-        self.__optimizable_params.append(
+        self._optimizable_params.append(
             ParamSpec(name=name, min=min, max=max, handle=p)
         )
         return p
@@ -517,24 +545,339 @@ class Calibration(ExpFragment):
                         f"Calibration of {dep.__class__.__name__} failed"
                     )
 
+    def _prepare_kernel_ops(self) -> None:
+        """Build the kernel drivers behind :meth:`check_state_kernel` and
+        :meth:`fix_state_kernel` (which, for a kernel-mode calibration, *are*
+        :meth:`check_state` / :meth:`fix_state`).
+
+        Must run on the host before any kernel that calls them is compiled.
+        :meth:`host_setup` does this automatically for kernel-mode
+        calibrations, so you rarely call it yourself; the generated drivers
+        and the parameter stores they reference are embedded into the kernel
+        at compile time.
+
+        Every calibration in the dependency tree must have a ``@kernel``
+        ``check_own_state`` returning a float "data" value. Nodes are fixed
+        with either a ``@kernel`` ``fix_own_state`` override or the default
+        optimizer fix (which requires optimizable params); a node with
+        neither is check-only, and a fix fails if it is found broken. The
+        optimizer strategies run on the host and are reached by RPC.
+
+        The optimizable params of default-fix nodes are overridden for the
+        lifetime of the fragment (their stores must outlive any one fix, as
+        recompiles re-embed them).
+        """
+        if getattr(self, "_kops_ready", False):
+            return
+
+        deps = dag.get_dependencies(self)
+        uses_default_fix = []
+        fixable = []
+
+        # Two drivers over the same deps: the check driver runs check_own_state
+        # per node (op == i); the fix driver interleaves check (op == 2i) and
+        # fix (op == 2i+1) ops. The host controllers decide which ops fire.
+        check_lines = [
+            "cal._csk_begin(force, continue_on_fail)",
+            "op = cal._csk_next()",
+            "while op >= 0:",
+        ]
+        fix_lines = [
+            "cal._fsk_begin(force)",
+            "op = cal._fsk_next()",
+            "while op >= 0:",
+        ]
+        cbranch = "if"
+        fbranch = "if"
+        for i, dep in enumerate(deps):
+            if not is_kernel(dep.check_own_state):
+                raise CalibrationError(
+                    f"{dep.__class__.__name__}.check_own_state must be a "
+                    "kernel for a kernel-driven check/fix"
+                )
+            setattr(self, f"_fsk_dep_{i}", dep)
+
+            check_lines.append(f"    {cbranch} op == {i}:")
+            check_lines.append(f"        r, d = cal._fsk_dep_{i}.check_own_state()")
+            check_lines.append(f"        cal._csk_record({i}, r, d)")
+            cbranch = "elif"
+
+            fix_lines.append(f"    {fbranch} op == {2 * i}:")
+            fix_lines.append(f"        r, d = cal._fsk_dep_{i}.check_own_state()")
+            fix_lines.append(f"        cal._fsk_record({i}, r, d)")
+            fbranch = "elif"
+
+            if is_kernel(dep.fix_own_state):
+                uses_default_fix.append(False)
+                fixable.append(True)
+                fix_call = f"cal._fsk_dep_{i}.fix_own_state()"
+            elif type(dep).fix_own_state is not Calibration.fix_own_state:
+                raise CalibrationError(
+                    f"{dep.__class__.__name__}.fix_own_state is host-only "
+                    "code, which a kernel-driven fix cannot run"
+                )
+            elif len(dep._optimizable_params) > 0:
+                # Default optimizer fix. Bind the stores now so they exist
+                # when the kernel is compiled.
+                dep._kopt_bind_stores()
+                uses_default_fix.append(True)
+                fixable.append(True)
+                fix_call = f"cal._fsk_dep_{i}._optimizer_kernel_loop()"
+            else:
+                # Check-only node: no way to fix it, but it may never need
+                # fixing. The controller fails the walk if it does.
+                uses_default_fix.append(False)
+                fixable.append(False)
+                fix_call = None
+
+            if fix_call is not None:
+                fix_lines.append(f"    elif op == {2 * i + 1}:")
+                fix_lines.append(f"        {fix_call}")
+
+        check_lines.append("    op = cal._csk_next()")
+        check_lines.append("return cal._csk_result()")
+        fix_lines.append("    op = cal._fsk_next()")
+        fix_lines.append("return cal._fsk_finished()")
+
+        logger.debug("Full generated check function:")
+        logger.debug("\n".join(check_lines))
+
+        logger.debug("Full generated fix function:")
+        logger.debug("\n".join(fix_lines))
+
+        self._fsk_deps = deps
+        self._fsk_uses_default_fix = uses_default_fix
+        self._fsk_fixable = fixable
+        self._fsk_gen = None
+        self._fsk_pending = None
+        self._fsk_last_check = None
+        self._fsk_failure = None
+        self._fsk_driver = kernel_from_string(["cal", "force"], "\n".join(fix_lines))
+
+        self._csk_deps = deps
+        self._csk_gen = None
+        self._csk_pending = None
+        self._csk_last = (CalibrationResult.OK, 0.0)
+        self._csk_result_pair = (CalibrationResult.OK, None)
+        self._csk_driver = kernel_from_string(
+            ["cal", "force", "continue_on_fail"], "\n".join(check_lines)
+        )
+
+        self._kops_ready = True
+
+    def prepare_kernel_fix(self) -> None:
+        """Deprecated alias for :meth:`prepare_kernel_ops`."""
+        self._prepare_kernel_ops()
+
+    @kernel
+    def fix_state_kernel(self, force=False) -> TBool:
+        """Kernel-callable :meth:`fix_state`: fix this Calibration and all its
+        dependencies from within a single kernel.
+
+        For a kernel-mode calibration this *is* :meth:`fix_state`. The DAG
+        walk decisions and the optimizer strategies run on the host, reached
+        purely by RPC; all measurements and fixes execute in this kernel, so
+        the entire fix costs one compile + one upload.
+
+        Returns True if every calibration ended up OK. Unlike the host
+        :meth:`fix_state` this cannot raise on failure — check the return
+        value (the failure reason is logged and left in ``_fsk_failure``).
+        """
+        return self._fsk_driver(self, force)
+
+    @kernel
+    def check_state_kernel(self, force=False, continue_on_fail=False):
+        """Kernel-callable :meth:`check_state`: check this Calibration and its
+        dependencies from within a single kernel, returning ``(result, data)``.
+
+        For a kernel-mode calibration this *is* :meth:`check_state`. The walk
+        decisions run on the host over RPC; every check_own_state runs in this
+        kernel, so the whole check costs one compile + one upload. ``result``
+        is the combined :class:`CalibrationResult` as an int (0 == OK).
+        """
+        return self._csk_driver(self, force, continue_on_fail)
+
+    def _kopt_bind_stores(self) -> None:
+        """Override the optimizable params and bind their stores for a
+        kernel-driven fix. Must run before kernel compilation."""
+        if getattr(self, "_kopt_stores", None) is not None:
+            return
+        param_specs = self._optimizable_params
+        stores = {}
+        for spec in param_specs:
+            _, store = self.override_param(spec.name, spec.handle.get())
+            stores[spec.name] = store
+        self._kopt_specs = param_specs
+        self._kopt_stores = [stores[spec.name] for spec in param_specs]
+
+    def _fsk_controller_gen(self, deps, fixable, force):
+        """Mirror of :meth:`fix_state`'s walk as a generator: yields
+        ("check"/"fix", node_idx) ops for the kernel driver and receives the
+        recorded (result, data) of each check."""
+        for i, dep in enumerate(deps):
+            current_state = dep._guess_own_state()
+
+            if current_state & CalibrationResult.BAD_EXPIRED and not force:
+                current_state, _ = yield ("check", i)
+
+            if current_state != CalibrationResult.OK or force:
+                if not fixable[i]:
+                    raise CalibrationError(
+                        f"Calibration {dep.__class__.__name__} needs fixing "
+                        "but has no kernel-drivable fix"
+                    )
+                yield ("fix", i)
+                current_state, current_data = yield ("check", i)
+
+                if current_state != CalibrationResult.OK:
+                    self.__most_recent_check_result = CalibrationResult.BAD_DEPS
+                    self.__most_recent_check_timestamp = time()
+                    self.__most_recent_check_data = current_data
+                    raise CalibrationError(
+                        f"Calibration of {dep.__class__.__name__} failed"
+                    )
+
+    @rpc
+    def _fsk_begin(self, force) -> None:
+        """RPC: start a kernel-driven fix walk."""
+        dag.publish_dag(self)
+        self._fsk_failure = None
+        self._fsk_pending = None
+        self._fsk_last_check = None
+        self._fsk_gen = self._fsk_controller_gen(
+            self._fsk_deps, self._fsk_fixable, force
+        )
+
+    @rpc
+    def _fsk_next(self) -> TInt32:
+        """RPC: advance the DAG-fix controller and return the next op for the
+        kernel driver (2*node = check, 2*node + 1 = fix, -1 = finished)."""
+        try:
+            if self._fsk_gen is None:
+                return -1
+
+            if self._fsk_pending is None:
+                item = next(self._fsk_gen)
+            else:
+                action, idx = self._fsk_pending
+                self._fsk_pending = None
+                if action == "fix":
+                    if self._fsk_uses_default_fix[idx]:
+                        # Commit the optimization the kernel just ran.
+                        self._fsk_deps[idx]._kopt_commit()
+                    item = self._fsk_gen.send(None)
+                else:
+                    item = self._fsk_gen.send(self._fsk_last_check)
+
+            action, idx = item
+            if action == "fix" and self._fsk_uses_default_fix[idx]:
+                self._fsk_deps[idx]._kopt_prime_default()
+        except StopIteration:
+            self._fsk_gen = None
+            return -1
+        except CalibrationError as e:
+            logger.error("Kernel-driven fix failed: %s", e)
+            self._fsk_failure = str(e)
+            self._fsk_gen = None
+            return -1
+
+        self._fsk_pending = item
+        return 2 * idx + (1 if action == "fix" else 0)
+
+    @rpc
+    def _fsk_record(self, node_idx, result, data) -> None:
+        """RPC: record a check measured by the kernel driver."""
+        result = CalibrationResult(int(result))
+        self._fsk_deps[node_idx]._record_own_check(result, data)
+        self._fsk_last_check = (result, data)
+
+    @rpc
+    def _fsk_finished(self) -> TBool:
+        """RPC: True if the kernel-driven fix left everything OK."""
+        return self._fsk_failure is None
+
+    def _csk_controller_gen(self, deps, force, continue_on_fail):
+        """Mirror of :meth:`check_state`'s walk as a generator: yields the
+        node index the kernel driver should check next, receives that check's
+        recorded ``(result, data)``, and leaves the combined outcome in
+        ``_csk_result_pair``."""
+        r = CalibrationResult.OK
+        data = None
+        for i, dep in enumerate(deps):
+            current_state = dep._guess_own_state()
+            if force or current_state != CalibrationResult.OK:
+                state, data = yield i
+                r |= state
+                if r != CalibrationResult.OK and not continue_on_fail:
+                    if i == len(deps) - 1:
+                        self._csk_result_pair = (r, data)
+                    else:
+                        self._csk_result_pair = (CalibrationResult.BAD_DEPS, None)
+                    return
+        self._csk_result_pair = (r, data)
+
+    @rpc
+    def _csk_begin(self, force, continue_on_fail) -> None:
+        """RPC: start a kernel-driven check walk."""
+        dag.publish_dag(self)
+        self._csk_result_pair = (CalibrationResult.OK, None)
+        self._csk_pending = None
+        self._csk_gen = self._csk_controller_gen(
+            self._csk_deps, force, continue_on_fail
+        )
+
+    @rpc
+    def _csk_next(self) -> TInt32:
+        """RPC: advance the check controller and return the next node index
+        for the kernel driver to check (-1 = finished)."""
+        try:
+            if self._csk_gen is None:
+                return -1
+            if self._csk_pending is None:
+                idx = next(self._csk_gen)
+            else:
+                self._csk_pending = None
+                idx = self._csk_gen.send(self._csk_last)
+        except StopIteration:
+            self._csk_gen = None
+            return -1
+        self._csk_pending = idx
+        return idx
+
+    @rpc
+    def _csk_record(self, node_idx, result, data) -> None:
+        """RPC: record a check measured by the kernel driver."""
+        result = CalibrationResult(int(result))
+        self._csk_deps[node_idx]._record_own_check(result, data)
+        self._csk_last = (result, data)
+
+    @rpc
+    def _csk_result(self) -> TTuple([TInt32, TFloat]):
+        """RPC: the combined ``(result, data)`` of the check walk."""
+        r, data = self._csk_result_pair
+        return (int(r), float(data) if isinstance(data, (int, float)) else 0.0)
+
     def _do_check_own_state(self) -> Tuple[CalibrationResult, Any]:
-        (
-            self.__most_recent_check_result,
-            self.__most_recent_check_data,
-        ) = self.check_own_state()
+        result, data = self.check_own_state()
+        self._record_own_check(result, data)
+        return result, data
+
+    def _record_own_check(self, result: CalibrationResult, data) -> None:
+        """Record + publish a check outcome, whether measured on the host or
+        reported back from a kernel."""
+        self.__most_recent_check_result = result
+        self.__most_recent_check_data = data
         self.__most_recent_check_timestamp = time()
 
         logger.debug(
             "Checked own state of %s: result %s/%s at time %s",
             self.__class__.__name__,
-            self.__most_recent_check_result,
-            self.__most_recent_check_data,
+            result,
+            data,
             self.__most_recent_check_timestamp,
         )
 
         self._publish_status()
-
-        return self.__most_recent_check_result, self.__most_recent_check_data
 
     def _publish_status(self) -> None:
         """Best-effort mirror of check state to :data:`STATUS_DATASET`.
@@ -561,6 +904,75 @@ class Calibration(ExpFragment):
             )
         except Exception:
             logger.warning("Could not publish calibration status", exc_info=True)
+
+    def _reset_optimizer_trace(self, param_names) -> None:
+        """Start a fresh live trace for this optimizer run.
+
+        Called at the top of every fix so an applet plots one sweep at a time.
+        Never raises: visualisation must not be able to break a calibration.
+        """
+        try:
+            table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+            if not isinstance(table, dict):
+                table = {}
+            table[self.__class__.__name__] = {
+                "param_names": list(param_names),
+                "points": [],
+                "data": [],
+                "status": [],
+                "started": time(),
+            }
+            self.set_dataset(
+                OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
+            )
+        except Exception:
+            logger.warning("Could not reset optimizer trace", exc_info=True)
+
+    def _publish_optimizer_point(self, values, result, data) -> None:
+        """Append one just-measured optimizer point to the live trace.
+
+        ``values`` is the parameter tuple that produced ``(result, data)``.
+        Broadcast so an applet can watch the scan as it happens. Best-effort:
+        both the host loop and the resident kernel loop call this per point,
+        and neither may be broken by a dataset hiccup.
+        """
+        try:
+            table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+            if not isinstance(table, dict):
+                return
+            entry = table.get(self.__class__.__name__)
+            if not isinstance(entry, dict):
+                return
+            entry["points"].append([float(v) for v in values])
+            entry["data"].append(
+                float(data) if isinstance(data, (int, float)) else None
+            )
+            entry["status"].append(int(result))
+            self.set_dataset(
+                OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
+            )
+        except Exception:
+            logger.warning("Could not publish optimizer point", exc_info=True)
+
+    def _on_recalibrated(self, committed_params: dict) -> None:
+        """Hook fired after a fix commits new optimal parameter values.
+
+        ``committed_params`` maps each optimizable-parameter name to the value
+        just persisted. The base implementation does nothing: qbutler stays
+        agnostic about where recalibrations are recorded. Override this (e.g.
+        via a downstream mix-in) to log them somewhere such as a database.
+
+        Runs at the end of a successful fix; the caller swallows any exception,
+        so an override need not be defensive, but must not have side effects
+        that a calibration run depends on.
+        """
+
+    def _fire_recalibrated(self, committed_params: dict) -> None:
+        """Best-effort dispatch to :meth:`_on_recalibrated`; never raises."""
+        try:
+            self._on_recalibrated(dict(committed_params))
+        except Exception:
+            logger.warning("_on_recalibrated hook failed", exc_info=True)
 
     def _recall_status(self) -> bool:
         """Hydrate check state from :data:`STATUS_DATASET` (a previous worker
@@ -624,7 +1036,7 @@ class Calibration(ExpFragment):
                 Raised if the algorithm fails to fix this Calibration.
         """
 
-        if len(self.__optimizable_params) == 0:
+        if len(self._optimizable_params) == 0:
             raise ValueError(
                 f"Calibration {self.__class__} cannot be optimized because it has no optimizable params"
             )
@@ -633,7 +1045,7 @@ class Calibration(ExpFragment):
 
     def _run_optimizer(self, optimizer_func) -> None:
         """Run an optimizer generator against this Calibration's parameters."""
-        param_specs = self.__optimizable_params
+        param_specs = self._optimizable_params
 
         stores = {}
         for spec in param_specs:
@@ -650,6 +1062,7 @@ class Calibration(ExpFragment):
         best_params = None
 
         try:
+            self._reset_optimizer_trace([spec.name for spec in param_specs])
             optimizer = optimizer_func(param_specs)
 
             try:
@@ -667,6 +1080,9 @@ class Calibration(ExpFragment):
 
                 logger.debug(
                     "Optimizer point %s: result=%s, data=%s", param_dict, result, data
+                )
+                self._publish_optimizer_point(
+                    [param_dict[spec.name] for spec in param_specs], result, data
                 )
 
                 if result == CalibrationResult.OK and self._is_better(data, best_data):
@@ -699,6 +1115,8 @@ class Calibration(ExpFragment):
             if result != CalibrationResult.OK:
                 raise CalibrationError("Best parameters did not pass check")
 
+            self._fire_recalibrated(best_params)
+
         finally:
             for spec in param_specs:
                 self.reset_param(spec.name)
@@ -707,88 +1125,171 @@ class Calibration(ExpFragment):
     def _run_optimizer_kernel(self, optimizer_func, param_specs, stores) -> None:
         """Run the optimizer when :meth:`check_own_state` is a kernel.
 
-        For batchable optimizers (``optimizer_func.batchable == True``, i.e.
-        the generator ignores ``send()`` feedback) all points are collected up
-        front and evaluated in a single kernel call, so the whole sweep pays
-        one compile + one upload. Parameter values are applied *on the core
-        device*: the kernel embeds references to the ``ParamStore`` objects
-        and calls their ``@portable`` ``set_value()``, so the update is seen
-        by ``check_own_state()``. (Mutating the host-side store from an RPC
-        does not work — the running kernel holds its own copy of the store,
-        so every point would be measured at the initial parameter value.)
+        The whole optimization runs as a *resident kernel loop* — a single
+        kernel call, i.e. one compile + one upload, never a recompile between
+        points. The kernel repeatedly asks the host for the next point
+        (:meth:`_kopt_next_point`), applies it *on the core device* via the
+        stores' ``@portable`` ``set_value()`` (so the update is seen by
+        ``check_own_state()``; mutating the host-side store from an RPC does
+        not work — the running kernel holds its own copy of the store),
+        measures in-kernel and reports the result back. The optimizer
+        strategy runs entirely on the host, so any generator works, including
+        feedback optimizers that need each result to choose the next point.
 
-        Feedback optimizers need each result before choosing the next point,
-        so they cannot be batched into one kernel; fall back to the host
-        loop, which pays one kernel call per point.
+        The loop ends with an in-kernel verification pass of the best
+        parameters, which is free (same kernel, no extra compile).
 
         In kernel mode the "data" output of :meth:`check_own_state` must be a
         float (the optimization metric).
         """
-        if not getattr(optimizer_func, "batchable", False):
-            logger.warning(
-                "Optimizer %s is not marked batchable: falling back to the "
-                "host optimizer loop, which recompiles and runs one kernel "
-                "per point. Set `optimizer_func.batchable = True` if the "
-                "optimizer ignores send() feedback.",
-                getattr(optimizer_func, "__name__", optimizer_func),
-            )
-            self._run_optimizer_host(optimizer_func, param_specs, stores)
-            return
-
-        all_param_dicts = list(optimizer_func(param_specs))
-        if not all_param_dicts:
-            raise CalibrationError("No parameter points to try")
-
-        param_names = [spec.name for spec in param_specs]
-
-        # [point][param] value matrix and parallel store list, as instance
-        # attributes so the kernel sweep can read them.
-        self._kop_points = [
-            [float(d[name]) for name in param_names] for d in all_param_dicts
-        ]
-        self._kop_stores = [stores[name] for name in param_names]
-        self._kop_best_idx = -1
-        self._kop_best_data = None
-
+        self._kopt_specs = param_specs
+        self._kopt_stores = [stores[spec.name] for spec in param_specs]
+        self._kopt_prime(optimizer_func)
         try:
-            self._kernel_sweep_all()
-
-            if self._kop_best_idx < 0:
-                raise CalibrationError("No valid parameters found")
-
-            # The best point already measured OK during the sweep; a separate
-            # verification pass would cost a second kernel compile + upload.
-            best_params = all_param_dicts[self._kop_best_idx]
-            for name, value in best_params.items():
-                self.set_dataset(
-                    self._param_dataset_key_from_name(name),
-                    value,
-                    broadcast=True,
-                    persist=True,
-                )
+            self._optimizer_kernel_loop()
+            self._kopt_commit()
         finally:
-            del self._kop_points
-            del self._kop_stores
-            for spec in param_specs:
-                self.reset_param(spec.name)
-            self.recompute_param_defaults()
+            self._kopt_cleanup()
 
-    def _kop_record_result(self, idx, result, data) -> None:
-        """RPC target: track the best OK point seen by the kernel sweep."""
-        if CalibrationResult(int(result)) == CalibrationResult.OK and self._is_better(
-            data, self._kop_best_data
+    def _kopt_prime(self, optimizer_func) -> None:
+        """Prime the host side of the resident kernel loop.
+
+        Requires ``_kopt_specs`` / ``_kopt_stores`` to be bound already; only
+        resets the per-fix state, so the store objects embedded in a compiled
+        kernel stay valid across fixes.
+        """
+        self._kopt_generator = optimizer_func(self._kopt_specs)
+        self._kopt_current_values = []
+        self._kopt_best_values = None
+        self._kopt_best_data = None
+        self._kopt_verify_result = None
+        self._reset_optimizer_trace([spec.name for spec in self._kopt_specs])
+
+    def _kopt_prime_default(self) -> None:
+        """Prime the resident loop for this node's configured optimizer (used
+        by the kernel-driven DAG fix)."""
+        self._kopt_prime(self.__optimizer_func)
+
+    def _kopt_commit(self) -> None:
+        """Persist the best point found by the resident loop; raise if the
+        optimization found nothing or the verification failed."""
+        if self._kopt_best_values is None:
+            raise CalibrationError("No valid parameters found")
+        if self._kopt_verify_result != CalibrationResult.OK:
+            raise CalibrationError("Best parameters did not pass check")
+        best_params = {}
+        for spec, store, value in zip(
+            self._kopt_specs, self._kopt_stores, self._kopt_best_values
         ):
-            self._kop_best_idx = idx
-            self._kop_best_data = data
+            best_params[spec.name] = value
+            # The kernel applied the best values to its own copy of the
+            # store; update the host copy to match.
+            store.set_value(value)
+            self.set_dataset(
+                self._param_dataset_key_from_name(spec.name),
+                value,
+                broadcast=True,
+                persist=True,
+            )
+        self._fire_recalibrated(best_params)
+
+    def _kopt_cleanup(self) -> None:
+        param_specs = self._kopt_specs
+        for attr in (
+            "_kopt_specs",
+            "_kopt_stores",
+            "_kopt_generator",
+            "_kopt_current_values",
+            "_kopt_best_values",
+            "_kopt_best_data",
+            "_kopt_verify_result",
+        ):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        for spec in param_specs:
+            self.reset_param(spec.name)
+        self.recompute_param_defaults()
+
+    @rpc
+    def _kopt_first_point(self) -> TList(TFloat):
+        """RPC: the optimizer's first point, or [] if it has none."""
+        try:
+            param_dict = next(self._kopt_generator)
+        except StopIteration as e:
+            self._kopt_generator_returned(e)
+            return []
+        return self._kopt_set_current(param_dict)
+
+    @rpc
+    def _kopt_next_point(self, result, data) -> TList(TFloat):
+        """RPC: record the point just measured, advance the host optimizer
+        and return the next point ([] = sweep finished)."""
+        result = CalibrationResult(int(result))
+        logger.debug(
+            "Optimizer point %s: result=%s, data=%s",
+            self._kopt_current_values,
+            result,
+            data,
+        )
+        self._publish_optimizer_point(self._kopt_current_values, result, data)
+        if result == CalibrationResult.OK and self._is_better(
+            data, self._kopt_best_data
+        ):
+            self._kopt_best_data = data
+            self._kopt_best_values = list(self._kopt_current_values)
+        try:
+            param_dict = self._kopt_generator.send((result, data))
+        except StopIteration as e:
+            self._kopt_generator_returned(e)
+            return []
+        return self._kopt_set_current(param_dict)
+
+    def _kopt_set_current(self, param_dict) -> list:
+        self._kopt_current_values = [
+            float(param_dict[spec.name]) for spec in self._kopt_specs
+        ]
+        return self._kopt_current_values
+
+    def _kopt_generator_returned(self, stop: StopIteration) -> None:
+        # Parity with the host loop: a generator may return an explicit best
+        # point instead of relying on the best-seen tracking.
+        if stop.value is not None:
+            self._kopt_best_values = [
+                float(stop.value[spec.name]) for spec in self._kopt_specs
+            ]
+
+    @rpc
+    def _kopt_get_best(self) -> TList(TFloat):
+        """RPC: the best values found, [] if none (verification is skipped)."""
+        if self._kopt_best_values is None:
+            return []
+        return list(self._kopt_best_values)
+
+    @rpc
+    def _kopt_record_verify(self, result, data) -> None:
+        """RPC: record the in-kernel verification measurement."""
+        result = CalibrationResult(int(result))
+        self._kopt_verify_result = result
+        self._record_own_check(result, data)
 
     @kernel
-    def _kernel_sweep_all(self):
-        """Evaluate every pre-collected optimizer point in one kernel call."""
-        for i in range(len(self._kop_points)):
-            for j in range(len(self._kop_stores)):
-                self._kop_stores[j].set_value(self._kop_points[i][j])
+    def _optimizer_kernel_loop(self):
+        """Resident kernel loop: pull points from the host, apply them
+        device-side, measure, report back; verify the best point before
+        returning. One kernel call per fix."""
+        values = self._kopt_first_point()
+        while len(values) > 0:
+            for i in range(len(self._kopt_stores)):
+                self._kopt_stores[i].set_value(values[i])
             result, data = self.check_own_state()
-            self._kop_record_result(i, result, data)
+            values = self._kopt_next_point(result, data)
+
+        values = self._kopt_get_best()
+        if len(values) > 0:
+            for i in range(len(self._kopt_stores)):
+                self._kopt_stores[i].set_value(values[i])
+            result, data = self.check_own_state()
+            self._kopt_record_verify(result, data)
 
     def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
         """Compare data value against current best based on optimization strategy."""
@@ -823,10 +1324,10 @@ class Calibration(ExpFragment):
 
         Args:
             optimizer_func: A generator function that yields param dicts and
-            receives (result, data). If the generator ignores the ``send()``
-            feedback (the full point list is known up front), set
-            ``optimizer_func.batchable = True`` so kernel-mode calibrations
-            can evaluate the whole sweep in a single kernel call.
+            receives (result, data). It always runs on the host — kernel-mode
+            calibrations stream its points into the resident kernel over RPC —
+            so feedback strategies (Bayesian optimization etc.) work the same
+            as simple sweeps.
         """
         if not self.__in_build_calibration:
             raise TypeError("This method must only be called in build_calibration()")

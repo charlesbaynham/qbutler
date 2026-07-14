@@ -26,8 +26,8 @@ def test_kernel_optimizer_uses_single_kernel_call(fragment_factory, mock_core):
         optimization_calls == 1
     ), f"Expected exactly 1 kernel call for optimization, got {optimization_calls}"
 
-    # Verify the calibration is now OK
-    result, data = c.check_state()
+    # Verify the calibration is now OK (direct kernel check)
+    result, data = c.check_own_state()
     assert result == CalibrationResult.OK
 
 
@@ -38,24 +38,24 @@ def test_kernel_optimizer_finds_optimum(fragment_factory):
 
     c.fix_own_state()
 
-    # The optimum is at 7.0; check_state should now pass
-    result, data = c.check_state()
+    # The optimum is at 7.0; the direct kernel check should now pass
+    result, data = c.check_own_state()
     assert result == CalibrationResult.OK
 
 
 @pytest.mark.withartiq
-def test_kernel_feedback_optimizer_falls_back_to_host(fragment_factory, mock_core):
-    """A non-batchable (feedback) optimizer must still work with a kernel
-    check_own_state, via the host loop (one kernel call per point)."""
+def test_kernel_feedback_optimizer_single_kernel_call(fragment_factory, mock_core):
+    """A feedback optimizer streams its points into the resident kernel over
+    RPC: still exactly one kernel call, no recompile between points."""
     c = fragment_factory(kernel_calibrations.KernelFeedbackOptimizableCalibration)
 
     initial_calls = mock_core.call_count
 
     c.fix_own_state()
 
-    assert mock_core.call_count - initial_calls > 1
+    assert mock_core.call_count - initial_calls == 1
 
-    result, data = c.check_state()
+    result, data = c.check_own_state()
     assert result == CalibrationResult.OK
 
 
