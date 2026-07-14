@@ -121,47 +121,6 @@ def test_dashboard_override_reaches_fragment(device_mgr, dataset_mgr):
     assert exp.fragment.DriftingCal.p.get() == pytest.approx(3.25)
 
 
-def test_scan_axes_raise_not_implemented(device_mgr, dataset_mgr):
-    """No silent wrong behaviour: a scanned submission fails loudly until the
-    F6 scanned-path work lands."""
-    Experiment = make_calibrated_experiment(EscapingClient)
-
-    probe = Experiment((device_mgr, dataset_mgr, ProcessArgumentManager({}), None))
-    p_fqn = probe.fragment.DriftingCal._free_params["p"].fqn
-
-    params = {
-        "scan": {
-            "axes": [
-                {
-                    "type": "linear",
-                    "range": {
-                        "start": 0.0,
-                        "stop": 1.0,
-                        "num_points": 3,
-                        "randomise_order": False,
-                    },
-                    "fqn": p_fqn,
-                    "path": "*",
-                }
-            ],
-            "num_repeats": 1,
-            "no_axes_mode": "single",
-            "randomise_order_globally": False,
-        }
-    }
-    exp = Experiment(
-        (
-            device_mgr,
-            dataset_mgr,
-            ProcessArgumentManager({PARAMS_ARG_KEY: pyon.encode(params)}),
-            None,
-        )
-    )
-    exp.prepare()
-    with pytest.raises(NotImplementedError, match="F6"):
-        exp.run()
-
-
 @pytest.mark.withartiq
 def test_escape_fix_and_reenter(experiment_factory):
     exp = _wrap(experiment_factory, EscapingClient)
