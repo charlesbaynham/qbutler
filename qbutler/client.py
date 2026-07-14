@@ -55,6 +55,7 @@ from .calibration import Calibration
 from .calibration import CalibrationError
 from .calibration import CalibrationEscape
 from .calibration import CalibrationResult
+from .calibration import fix_targets
 from .precompile import PrecompilePool
 from .worker_ipc_lock import install_worker_ipc_lock
 
@@ -121,12 +122,19 @@ class CalibratedExpFragment(ExpFragment):
         calibration_target: The top :class:`~qbutler.calibration.Calibration` of
             the DAG. Leave ``None`` to auto-discover the single attached
             calibration.
+        calibration_targets: Several top calibrations to maintain at once (the
+            multi-target case). The client walks the *union* of their DAGs, so a
+            dependency shared by several targets is fixed once, ahead of every
+            node that depends on it, and each target's own leaf is fixed. Takes
+            precedence over ``calibration_target`` when set. Leave ``None`` for
+            the single-target case.
         max_recalibrations: How many escape/recalibrate cycles to allow before
             giving up (guards against a non-converging calibration looping
             forever). Default 20.
     """
 
     calibration_target: Calibration = None
+    calibration_targets: list = None
     max_recalibrations: int = 20
 
     def host_setup(self):
@@ -170,24 +178,42 @@ class CalibratedExpFragment(ExpFragment):
     def _arm_calibration(self):
         if getattr(self, "_cal_armed", False):
             return
-        target = self._resolve_target()
-        self._cal_target = target
+        targets = self._resolve_targets()
+        self._cal_targets = targets
 
         # Each node needs its own host_setup before its kernel can compile (it
-        # arms the measurement the kernel reads). The target is attached, so
-        # super().host_setup() already set it up; its dependencies are detached,
-        # so set them up here.
-        deps = dag.get_dependencies(target)
-        for node in deps:
-            if node is not target:
+        # arms the measurement the kernel reads). The targets are attached, so
+        # super().host_setup() already set them up; their dependencies are
+        # detached, so set them up here. Walk the union so a dependency shared by
+        # several targets is set up exactly once.
+        for node in dag.get_union_dependencies(targets):
+            if node not in targets:
                 node.host_setup()
 
-        target.seed_precompile_pool(self._ensure_cal_pool())
+        pool = self._ensure_cal_pool()
+        for target in targets:
+            target.seed_precompile_pool(pool)
         self._cal_armed = True
 
-    def _resolve_target(self) -> Calibration:
+    def _recalibrate(self):
+        """Run the fix walk over every maintained target's DAG (host side).
+
+        The escape/re-enter loops (continuous and scanned) call this on a
+        :class:`~qbutler.calibration.CalibrationEscape`; it walks the union so a
+        shared dependency is fixed once.
+        """
+        fix_targets(self._resolve_targets())
+
+    def _resolve_targets(self) -> list:
+        if self.calibration_targets is not None:
+            targets = list(self.calibration_targets)
+            if not targets:
+                raise CalibrationError(
+                    f"{type(self).__name__}.calibration_targets is empty."
+                )
+            return targets
         if self.calibration_target is not None:
-            return self.calibration_target
+            return [self.calibration_target]
 
         seen = []
         for value in vars(self).values():
@@ -195,7 +221,7 @@ class CalibratedExpFragment(ExpFragment):
                 seen.append(value)
 
         if len(seen) == 1:
-            return seen[0]
+            return seen
         if not seen:
             raise CalibrationError(
                 f"{type(self).__name__} has no calibration attached. Attach one "
@@ -205,17 +231,62 @@ class CalibratedExpFragment(ExpFragment):
         names = ", ".join(type(c).__name__ for c in seen)
         raise CalibrationError(
             f"{type(self).__name__} has several calibrations ({names}); set "
-            "self.calibration_target = self.<top calibration> in build_fragment() "
-            "so the client knows which DAG to maintain."
+            "self.calibration_target = self.<top calibration> (single DAG) or "
+            "self.calibration_targets = [self.<leaf>, ...] (maintain several) in "
+            "build_fragment() so the client knows which DAG(s) to maintain."
         )
 
     @rpc
     def _needs_recalibration(self) -> TBool:
-        target = getattr(self, "_cal_target", None) or self._resolve_target()
-        for node in dag.get_dependencies(target):
+        targets = getattr(self, "_cal_targets", None) or self._resolve_targets()
+        for node in dag.get_union_dependencies(targets):
             if node._guess_own_state() != CalibrationResult.OK:
                 return True
         return False
+
+
+def _collect_calibration_channels(fragment) -> dict:
+    """Every result channel belonging to a :class:`~qbutler.calibration.Calibration`
+    node (or anything beneath one) in the attached fragment tree.
+
+    These are DAG bookkeeping — the ``status``/``data`` channels a check pushes,
+    and any channels of the node's internal measurement fragments. They are
+    pushed during a check/fix walk, NOT once per scan point, so they must not
+    take part in a scan: ndscan's ``ResultBatcher`` requires every sinked
+    channel to be pushed exactly once per point and fails the scan otherwise
+    (live finding, RID 77567). Calibration state still reaches applets/archives
+    via the broadcast ``calibrations.status`` dataset.
+    """
+    found = {}
+
+    def visit(frag):
+        if isinstance(frag, Calibration):
+            frag._collect_result_channels(found)
+            return
+        for sub in frag._subfragments:
+            if sub in frag._detached_subfragments:
+                continue
+            visit(sub)
+
+    visit(fragment)
+    return found
+
+
+def exclude_calibration_channels_from_scan(fragment, tlr) -> None:
+    """Strip the scan sinks ndscan gave to calibration-node channels.
+
+    Called in the scanned path after the ``TopLevelRunner`` assigned sinks
+    (its ``build``) and before it broadcasts the scan schema (its ``run``):
+    un-sinks the channels (both the ``ResultBatcher`` and ``push`` skip
+    sink-less channels) and drops them from the runner's result/name maps so
+    the schema does not advertise dataset series that never receive points.
+    """
+    for channel in _collect_calibration_channels(fragment).values():
+        if channel.sink is None:
+            continue
+        channel.set_sink(None)
+        tlr._scan_result_sinks.pop(channel, None)
+        tlr._short_child_channel_names.pop(channel, None)
 
 
 def _collect_float_stores(fragment) -> list:
@@ -330,9 +401,13 @@ def make_calibrated_experiment(
 
         EnsureBlueMOT = make_calibrated_experiment(EnsureBlueMOTFrag)
 
-    Submitting with scan axes raises ``NotImplementedError`` for now: the
-    escape/re-entry semantics at scan-point boundaries are the F6 follow-up.
-    The non-scanned path (single / repeat / time series) is fully supported.
+    Scan axes are supported: the escape/recalibrate/re-enter loop is wired into
+    ndscan's scan loop (``ScanRunner.run``, patched in
+    :mod:`qbutler.patch_ndscan`), so a mid-scan ``CalibrationEscape`` runs the
+    DAG fix on the host and resumes the scan at the interrupted point (that
+    point re-runs; already-completed points are not repeated). The non-scanned
+    path (single / repeat / time series) drives the same fix through
+    :func:`drive_with_recalibration`.
 
     ndscan needs the fragment tree at ``build()`` time for the argument UI,
     and the ARTIQ master gives the worker's build action an absolute 15 s
@@ -358,6 +433,11 @@ def make_calibrated_experiment(
             super().prepare()
             fragment = self.fragment
             scanned = self.tlr.spec.axes and not self.tlr._is_time_series
+            if scanned:
+                # Calibration-node channels are pushed by the check/fix walk,
+                # not per scan point; sinked, they make the per-point
+                # ResultBatcher fail the scan (RID 77567).
+                exclude_calibration_channels_from_scan(fragment, self.tlr)
             if is_kernel(fragment.run_once) and not scanned:
                 # Seed the main kernel into the pool FIRST (node kernels are
                 # seeded later, at host_setup) so the background compile that
@@ -368,26 +448,29 @@ def make_calibrated_experiment(
                 )
 
         def run(self):
-            if self.tlr.spec.axes and not self.tlr._is_time_series:
-                raise NotImplementedError(
-                    "Scanning a CalibratedExpFragment is not supported yet: "
-                    "escape/recalibrate re-entry at scan-point boundaries is "
-                    "the F6 follow-up. Submit without scan axes, or scan the "
-                    "bare fragment via make_fragment_scan_exp (no mid-run "
-                    "recalibration)."
-                )
             fragment: CalibratedExpFragment = self.fragment
-            target = fragment._resolve_target()
+            fragment._resolve_targets()  # fail fast on a mis-declared DAG
             name = get_class_pretty_name(fragment.__class__)
             self.tlr.create_applet(title=f"{name} ({fragment.fqn})")
+            scanned = self.tlr.spec.axes and not self.tlr._is_time_series
             try:
                 with suppress(TerminationRequested):
-                    drive_with_recalibration(
-                        self.tlr.run,
-                        target.fix_state,
-                        fragment.max_recalibrations,
-                        describe=f" from {type(fragment).__name__}",
-                    )
+                    if scanned:
+                        # The escape/recalibrate/re-enter loop lives inside the
+                        # scan loop (ndscan's ScanRunner.run, patched in
+                        # patch_ndscan): on a CalibrationEscape it runs
+                        # fragment._recalibrate() and re-enters acquire(), which
+                        # resumes at the interrupted scan point. So the whole
+                        # scan (recalibrations included) completes within one
+                        # tlr.run().
+                        self.tlr.run()
+                    else:
+                        drive_with_recalibration(
+                            self.tlr.run,
+                            fragment._recalibrate,
+                            fragment.max_recalibrations,
+                            describe=f" from {type(fragment).__name__}",
+                        )
             finally:
                 fragment._shutdown_calibration()
 

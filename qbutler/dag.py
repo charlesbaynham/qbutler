@@ -103,6 +103,37 @@ def get_dependencies(obj, furthest_first=True) -> List:
     return [t() for t, _ in targets_and_distances]
 
 
+def get_union_dependencies(targets, furthest_first=True) -> List:
+    """Merge several targets' dependency lists into one walk order.
+
+    Every node in the union of the targets' DAGs appears exactly once. A node is
+    ordered by its *greatest* distance from any target, so a dependency shared by
+    several targets is placed ahead of every node that depends on it — walking
+    this order fixes a shared node once, before its dependents. With a single
+    target this reduces to :func:`get_dependencies`.
+
+    Args:
+        targets: an iterable of :class:`~qbutler.calibration.Calibration`
+            instances (the leaf calibrations a client maintains).
+
+    Returns:
+        List: the deduplicated calibration objects, furthest dependency first.
+    """
+    max_distance = {}
+    for target in targets:
+        G = _get_graph_containing_calibration(target)
+        paths = nx.single_source_shortest_path(G, weakref.ref(target))
+        for ref, path in paths.items():
+            distance = len(path)
+            if ref not in max_distance or distance > max_distance[ref]:
+                max_distance[ref] = distance
+
+    ordered = sorted(
+        max_distance.items(), key=lambda item: item[1], reverse=furthest_first
+    )
+    return [ref() for ref, _ in ordered]
+
+
 def get_calibrations_of_type(obj_type: Type["Calibration"]) -> List["Calibration"]:
     """
     If the DAG cache contains Calibrations of the passed type, return the

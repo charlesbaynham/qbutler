@@ -65,6 +65,74 @@ class CalibrationResult(int, Flag):
     INVALID_DATA = auto()
 
 
+def fix_targets(targets, force=False) -> None:
+    """Fix the union of several calibration targets' DAGs.
+
+    The multi-target analogue of :meth:`Calibration.fix_state`. It walks
+    :func:`dag.get_union_dependencies` — the merged, furthest-dependency-first
+    order across every target — so a node shared by several targets is fixed
+    exactly once, before any node that depends on it, and every target's own
+    leaf is fixed. Node ordering, the per-node guess/check/fix/re-check and the
+    pooled-kernel dispatch are identical to the single-target walk.
+
+    Args:
+        targets: the leaf calibrations to maintain (a client's
+            ``calibration_targets``). Empty is a no-op.
+        force: re-check and re-fix every node even if it looks fine.
+
+    Raises:
+        CalibrationError: if a node will not come good after a fix.
+    """
+    targets = list(targets)
+    if not targets:
+        return
+    for target in targets:
+        dag.publish_dag(target)
+
+    for dep in dag.get_union_dependencies(targets):
+        current_state = dep._guess_own_state()
+        if current_state & CalibrationResult.BAD_EXPIRED and not force:
+            current_state, _ = dep._do_check_own_state()
+
+        if current_state != CalibrationResult.OK or force:
+            dep._do_fix_own_state()
+            current_state, _ = dep._do_check_own_state()
+            if current_state != CalibrationResult.OK:
+                raise CalibrationError(
+                    f"Calibration of {dep.__class__.__name__} failed"
+                )
+
+
+def check_targets(
+    targets, force=False, continue_on_fail=False
+) -> Tuple["CalibrationResult", Any]:
+    """Check the union of several calibration targets' DAGs.
+
+    The multi-target analogue of :meth:`Calibration.check_state`; returns as soon
+    as a node is found bad (unless ``continue_on_fail``). See :func:`fix_targets`
+    for the ordering guarantee.
+    """
+    targets = list(targets)
+    if not targets:
+        return CalibrationResult.OK, None
+    for target in targets:
+        dag.publish_dag(target)
+
+    r = CalibrationResult.OK
+    data = None
+    deps = dag.get_union_dependencies(targets)
+    for dep in deps:
+        current_state = dep._guess_own_state()
+        if force or current_state != CalibrationResult.OK:
+            state, data = dep._do_check_own_state()
+            r |= state
+            if r != CalibrationResult.OK and not continue_on_fail:
+                if dep is deps[-1]:
+                    return r, data
+                return CalibrationResult.BAD_DEPS, None
+    return r, data
+
+
 class Calibration(ExpFragment):
     """
     Represent a step in a calibration chain
