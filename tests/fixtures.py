@@ -425,9 +425,7 @@ async def launch_artiq_master(tmp_path: Path):
 
     print(tmp_path)
 
-    (tmp_path / "device_db.py").write_text(
-        textwrap.dedent(
-            """
+    (tmp_path / "device_db.py").write_text(textwrap.dedent("""
         device_db = {
             "core": {
                 "type": "local",
@@ -436,9 +434,7 @@ async def launch_artiq_master(tmp_path: Path):
                 "arguments": {"host": None, "ref_period": 1e-09, "target": "rv32g"},
             },
         }
-        """
-        )
-    )
+        """))
     (tmp_path / "repository").mkdir()
 
     env = os.environ.copy()

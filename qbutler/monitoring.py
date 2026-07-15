@@ -42,6 +42,7 @@ MonitorMaster
 
 import asyncio
 import logging
+import threading
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -57,6 +58,44 @@ from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 
 logger = logging.getLogger(__name__)
+
+
+def patch_artiq_threading():
+    """
+    Patch ARTIQ's get_object and put_object to use a threading lock
+
+    This prevents multiple threads from accessing the master at the same time,
+    which would cause errors.
+
+    This is required because connection to the ARTIQ master are not thread-safe,
+    but our monitors are being launched in separate threads.
+    """
+    import artiq.master.worker_impl as worker_impl
+
+    thread_lock = threading.RLock()
+
+    get_object_original = worker_impl.get_object
+    put_object_original = worker_impl.put_object
+
+    def get_object_patched(*arg, **kwargs):
+        # Acquire a lock to prevent multiple threads from accessing the master at
+        # the same time. It will be released when put_object is next called,
+        # which always follows.
+        logger.debug("get_object_patched acquiring lock")
+        thread_lock.acquire()
+        return get_object_original(*arg, **kwargs)
+
+    worker_impl.get_object = get_object_patched
+
+    def put_object_patched(*arg, **kwargs):
+        try:
+            return put_object_original(*arg, **kwargs)
+
+        finally:
+            logger.debug("put_object_patched releasing lock")
+            thread_lock.release()
+
+    worker_impl.put_object = put_object_patched
 
 
 def make_monitor_controller(
@@ -116,6 +155,8 @@ def make_monitor_controller(
         pipeline (str):
             Default pipeline for the monitors to run in
     """
+
+    patch_artiq_threading()
 
     class MonitorController(ExpFragment):
         def build_fragment(self):
