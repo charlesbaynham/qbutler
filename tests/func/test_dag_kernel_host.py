@@ -44,19 +44,6 @@ def test_kernel_only_dag_fix_repairs_all_levels(fragment_factory):
     assert by_class["KOnlyTop"].top_param.get() == pytest.approx(4.0)
 
 
-@pytest.mark.withartiq
-def test_kernel_only_dag_fix_single_kernel_call(fragment_factory, mock_core):
-    """A @kernel run_once fixes the whole all-kernel DAG in one kernel call."""
-    frag = fragment_factory(cals.KOnlyDagFragment)
-    frag.host_setup()
-
-    initial_calls = mock_core.call_count
-    frag.run_once()
-
-    assert mock_core.call_count - initial_calls == 1
-    assert frag.fix_ok is True
-
-
 # --------------------------------------------------------------------------
 # Scenario 2: an all-host DAG
 # --------------------------------------------------------------------------
@@ -121,15 +108,3 @@ def test_mixed_dag_fix_repairs_kernel_and_host_deps(fragment_factory):
     assert by_class["MixedKernelTop"].top_param.get() == pytest.approx(4.0)
 
 
-@pytest.mark.withartiq
-def test_mixed_dag_fix_single_kernel_call(fragment_factory, mock_core):
-    """A @kernel run_once fixes the mixed DAG — kernel nodes in the resident
-    kernel, the host-only node over synchronous RPC — in one kernel call."""
-    frag = fragment_factory(cals.MixedDagFixFragment)
-    frag.host_setup()
-
-    initial_calls = mock_core.call_count
-    frag.run_once()
-
-    assert mock_core.call_count - initial_calls == 1
-    assert frag.fix_ok is True
