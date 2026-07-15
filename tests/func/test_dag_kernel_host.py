@@ -78,7 +78,6 @@ def test_host_only_dag_fix_repairs_all_levels(fragment_factory):
 # --------------------------------------------------------------------------
 
 
-
 @pytest.mark.withartiq
 def test_mixed_dag_check_reports_broken(fragment_factory):
     """Checking a broken mixed DAG reports not-OK."""
@@ -106,5 +105,3 @@ def test_mixed_dag_fix_repairs_kernel_and_host_deps(fragment_factory):
     assert by_class["MixedKernelDep"].k_param.get() == pytest.approx(2.0)
     assert by_class["MixedHostDep"].broken is False
     assert by_class["MixedKernelTop"].top_param.get() == pytest.approx(4.0)
-
-

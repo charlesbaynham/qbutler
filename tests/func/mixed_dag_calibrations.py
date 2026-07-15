@@ -100,7 +100,6 @@ class KOnlyDagFragment(ExpFragment):
         self.setattr_device("core")
         self.fix_ok = False
 
-
     @kernel
     def run_once(self):
         ok = self.KOnlyTop.fix_state_kernel(False)
