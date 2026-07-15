@@ -81,7 +81,7 @@ def patch_artiq_threading():
         # Acquire a lock to prevent multiple threads from accessing the master at
         # the same time. It will be released when put_object is next called,
         # which always follows.
-        logger.warning("get_object_patched acquiring lock")
+        logger.debug("get_object_patched acquiring lock")
         thread_lock.acquire()
         return get_object_original(*arg, **kwargs)
 
@@ -92,7 +92,7 @@ def patch_artiq_threading():
             return put_object_original(*arg, **kwargs)
 
         finally:
-            logger.warning("put_object_patched releasing lock")
+            logger.debug("put_object_patched releasing lock")
             thread_lock.release()
 
     worker_impl.put_object = put_object_patched
