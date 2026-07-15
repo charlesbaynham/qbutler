@@ -155,18 +155,27 @@ def test_generator_protocol_send_is_ignored():
 # ---------------------------------------------------------------------------
 
 
-def drive(optimizer, objective, result="OK"):
+OK = 0  # CalibrationResult.OK == 0
+BAD = 1  # any non-zero result is not OK
+
+
+def drive(optimizer, objective, result=OK):
     """Drive a feedback-consuming optimizer generator to exhaustion.
 
     Mirrors ``Calibration._run_optimizer``: for each yielded param dict, feed
-    back ``(result, objective(params))``. Returns the list of yielded points.
+    back ``(result, objective(params))``. ``result`` may be a constant or a
+    callable ``params -> result``. Returns the list of yielded points.
     """
     points = []
+
+    def result_for(params):
+        return result(params) if callable(result) else result
+
     try:
         params = next(optimizer)
         while True:
             points.append(params)
-            params = optimizer.send((result, objective(params)))
+            params = optimizer.send((result_for(params), objective(params)))
     except StopIteration:
         pass
     return points
@@ -276,6 +285,33 @@ def test_zoom_no_valid_points_returns_gracefully():
     opt = zoom_grid_optimizer(num_points=5)(specs)
     # All non-finite data -> no centre found -> only stage 1 runs.
     points = drive(opt, lambda p: float("nan"))
+    assert len(points) == 5
+
+
+def test_zoom_ignores_non_ok_points_when_centring():
+    # The globally-highest data sits at x >= 0.8 but is reported BAD; the best
+    # OK point is at x = 0.3, so the refine window must centre on 0.3.
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=11, zoom_factor=10)(specs)
+
+    def objective(p):
+        return p["x"]  # monotonically increasing -> raw max at the top edge
+
+    def result(p):
+        return BAD if p["x"] > 0.75 else OK  # top of the range is not OK
+
+    points = drive(opt, objective, result=result)
+    stage2 = points[11:]
+    xs = [p["x"] for p in stage2]
+    # Best OK coarse node is 0.7 (0.8, 0.9, 1.0 are BAD); centre there.
+    assert np.mean(xs) == pytest.approx(0.7)
+
+
+def test_zoom_only_stage1_if_all_points_bad():
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=5)(specs)
+    # Every point BAD -> no OK centre -> refine pass skipped.
+    points = drive(opt, lambda p: p["x"], result=BAD)
     assert len(points) == 5
 
 
