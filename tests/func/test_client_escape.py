@@ -121,15 +121,27 @@ def test_dashboard_override_reaches_fragment(device_mgr, dataset_mgr):
     assert exp.fragment.DriftingCal.p.get() == pytest.approx(3.25)
 
 
-def test_scan_axes_raise_not_implemented(device_mgr, dataset_mgr):
-    """No silent wrong behaviour: a scanned submission fails loudly until the
-    F6 scanned-path work lands."""
-    Experiment = make_calibrated_experiment(EscapingClient)
+class ScannableClient(CalibratedExpFragment):
+    """Client with a plain (non-calibration) scan axis, to exercise the
+    scanned-submission path end to end."""
 
-    probe = Experiment((device_mgr, dataset_mgr, ProcessArgumentManager({}), None))
-    p_fqn = probe.fragment.DriftingCal._free_params["p"].fqn
+    def build_fragment(self):
+        self.setattr_device("core")
+        self.setattr_calibration(DriftingCal)
+        self.setattr_param("x", FloatParam, "Scan axis", default=0.0)
+        self.n_runs = 0
 
-    params = {
+    def _count(self):
+        self.n_runs += 1
+
+    @kernel
+    def run_once(self):
+        self._count()
+        self.recalibrate_if_needed()
+
+
+def _scan_params(fqn, num_points):
+    return {
         "scan": {
             "axes": [
                 {
@@ -137,10 +149,10 @@ def test_scan_axes_raise_not_implemented(device_mgr, dataset_mgr):
                     "range": {
                         "start": 0.0,
                         "stop": 1.0,
-                        "num_points": 3,
+                        "num_points": num_points,
                         "randomise_order": False,
                     },
-                    "fqn": p_fqn,
+                    "fqn": fqn,
                     "path": "*",
                 }
             ],
@@ -149,17 +161,35 @@ def test_scan_axes_raise_not_implemented(device_mgr, dataset_mgr):
             "randomise_order_globally": False,
         }
     }
+
+
+@pytest.mark.withartiq
+def test_scan_axes_escape_fix_and_complete(device_mgr, dataset_mgr):
+    """A scanned submission runs through ndscan's scan loop: the first point
+    escapes for recalibration, the host fixes the DAG, the scan resumes at the
+    interrupted point, and every point lands exactly once."""
+    Experiment = make_calibrated_experiment(ScannableClient)
+
+    probe = Experiment((device_mgr, dataset_mgr, ProcessArgumentManager({}), None))
+    x_fqn = probe.fragment._free_params["x"].fqn
+
     exp = Experiment(
         (
             device_mgr,
             dataset_mgr,
-            ProcessArgumentManager({PARAMS_ARG_KEY: pyon.encode(params)}),
+            ProcessArgumentManager(
+                {PARAMS_ARG_KEY: pyon.encode(_scan_params(x_fqn, 3))}
+            ),
             None,
         )
     )
     exp.prepare()
-    with pytest.raises(NotImplementedError, match="F6"):
-        exp.run()
+    exp.run()
+
+    frag = exp.fragment
+    # One escape (first point re-runs after the fix) then the three scan points.
+    assert frag.n_runs == 4
+    assert frag.DriftingCal.p.get() == pytest.approx(7.0)
 
 
 @pytest.mark.withartiq
@@ -194,7 +224,7 @@ def test_no_escape_when_already_healthy(experiment_factory):
 def test_target_auto_discovered(fragment_factory):
     client = fragment_factory(EscapingClient)
     client.host_setup()
-    assert client._cal_target is client.DriftingCal
+    assert client._cal_targets == [client.DriftingCal]
     client._shutdown_calibration()
 
 
