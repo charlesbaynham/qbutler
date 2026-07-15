@@ -242,7 +242,7 @@ class MixedDagFixFragment(ExpFragment):
 
     @kernel
     def run_once(self):
-        ok = self.MixedKernelTop.fix_state_kernel(False)
+        ok = self.MixedKernelTop.fix_state(False)
         self._report(ok)
 
     def _report(self, ok) -> None:

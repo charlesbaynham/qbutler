@@ -610,6 +610,8 @@ class Calibration(ExpFragment):
                         f"Calibration of {dep.__class__.__name__} failed"
                     )
 
+        return current_state
+
     def seed_precompile_pool(self, pool) -> None:
         """Seed ``pool`` with every check/fix kernel in this calibration's DAG
         and point the host walk at the precompiled artifacts.

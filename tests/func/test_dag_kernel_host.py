@@ -4,14 +4,6 @@
 2. an all-host DAG (plain host calibrations), and
 3. a mixed DAG: a kernel primary that depends on a mixture of kernel-checked
    and host-only calibrations.
-
-For (1) and (3) the primary is a kernel-mode calibration, so its
-``check_state`` / ``fix_state`` are driven from a single resident kernel
-(``check_state_kernel`` / ``fix_state_kernel``) and can be called straight
-from a caller's ``@kernel`` ``run_once``. The kernel-checked nodes are
-measured on the core device; the host-only nodes are checked and fixed on the
-host, reached synchronously from inside the controller RPCs the kernel already
-blocks on.
 """
 
 import pytest
@@ -41,7 +33,7 @@ def test_kernel_only_dag_fix_repairs_all_levels(fragment_factory):
     top.host_setup()
 
     ok = top.fix_state()
-    assert ok is True
+    assert ok == CalibrationResult.OK
 
     result, _ = top.check_state()
     assert result == CalibrationResult.OK
@@ -118,7 +110,7 @@ def test_mixed_dag_fix_repairs_kernel_and_host_deps(fragment_factory):
     top.host_setup()
 
     ok = top.fix_state()
-    assert ok is True
+    assert ok == CalibrationResult.OK
 
     result, _ = top.check_state()
     assert result == CalibrationResult.OK
