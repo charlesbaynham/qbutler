@@ -112,10 +112,10 @@ def zoom_grid_optimizer(
     Unlike :func:`grid_search_optimizer`, this optimizer consumes the
     ``(result, data)`` feedback sent for each point in order to locate the
     stage-1 optimum. A point is eligible to become the stage-1 centre only if
-    its ``data`` is a finite real number; the driving :class:`Calibration`
-    remains the sole authority on which point is ultimately chosen (it enforces
-    the ``OK`` result requirement), so a spurious point can at worst mis-centre
-    the refinement, never corrupt the final result.
+    its result is ``OK`` and its ``data`` is a finite real number (``OK == 0``
+    is compared via ``int(result)`` so this module stays free of qbutler
+    imports). The driving :class:`Calibration` remains the sole authority on
+    which point is ultimately chosen across both stages.
 
     This is a factory: it returns a generator function suitable for
     :meth:`Calibration.set_optimizer`, e.g.
@@ -168,8 +168,9 @@ def zoom_grid_optimizer(
         # Stage 1: full-range coarse grid.
         for point in itertools.product(*coarse_axes):
             params = dict(zip(names, point))
-            _, data = yield params
-            if isinstance(data, (int, float)) and np.isfinite(data):
+            result, data = yield params
+            ok = int(result) == 0  # CalibrationResult.OK == 0
+            if ok and isinstance(data, (int, float)) and np.isfinite(data):
                 if _better(data, best_value, optimization_type):
                     best_value = data
                     best_point = params
