@@ -8,6 +8,7 @@ import pytest
 from qbutler.optimizers import NUM_SCAN_POINT
 from qbutler.optimizers import ParamSpec
 from qbutler.optimizers import grid_search_optimizer
+from qbutler.optimizers import zoom_grid_optimizer
 
 
 def make_spec(name, lo, hi):
@@ -147,3 +148,156 @@ def test_generator_protocol_send_is_ignored():
     # Sending a (result, data) tuple should not raise
     pt2 = gen.send(("OK", 0.5))
     assert isinstance(pt2, dict)
+
+
+# ---------------------------------------------------------------------------
+# zoom_grid_optimizer
+# ---------------------------------------------------------------------------
+
+
+def drive(optimizer, objective, result="OK"):
+    """Drive a feedback-consuming optimizer generator to exhaustion.
+
+    Mirrors ``Calibration._run_optimizer``: for each yielded param dict, feed
+    back ``(result, objective(params))``. Returns the list of yielded points.
+    """
+    points = []
+    try:
+        params = next(optimizer)
+        while True:
+            points.append(params)
+            params = optimizer.send((result, objective(params)))
+    except StopIteration:
+        pass
+    return points
+
+
+def test_zoom_two_stages_yield_double_the_points():
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=5)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2))
+    # Stage 1 (5) + stage 2 (5)
+    assert len(points) == 2 * 5
+
+
+def test_zoom_stage1_covers_full_range():
+    specs = [make_spec("x", 2.0, 8.0)]
+    opt = zoom_grid_optimizer(num_points=7)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 5.0) ** 2))
+    stage1 = points[:7]
+    xs = [p["x"] for p in stage1]
+    assert xs[0] == pytest.approx(2.0)
+    assert xs[-1] == pytest.approx(8.0)
+
+
+def test_zoom_stage2_is_centred_on_optimum_and_zoomed():
+    # 1D parabola peaking at x = 0.5 over [0, 1]; num_points odd so a coarse
+    # node lands exactly on 0.5.
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=11, zoom_factor=10)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2))
+    stage2 = points[11:]
+    xs = [p["x"] for p in stage2]
+    # Centred on the coarse optimum (0.5)...
+    assert np.mean(xs) == pytest.approx(0.5)
+    # ...and 10x smaller: full width 1.0 -> refined width 0.1
+    assert (max(xs) - min(xs)) == pytest.approx(0.1)
+    assert min(xs) == pytest.approx(0.45)
+    assert max(xs) == pytest.approx(0.55)
+
+
+def test_zoom_refines_estimate_better_than_coarse_alone():
+    # Optimum at an irrational-ish point the coarse grid misses.
+    center = 0.5234
+    specs = [make_spec("x", 0.0, 1.0)]
+
+    def objective(p):
+        return -((p["x"] - center) ** 2)
+
+    opt = zoom_grid_optimizer(num_points=11, zoom_factor=10)(specs)
+    points = drive(opt, objective)
+    best = max(points, key=objective)
+    coarse_best = max(points[:11], key=objective)
+    # The refined pass gets strictly closer to the true optimum.
+    assert abs(best["x"] - center) < abs(coarse_best["x"] - center)
+
+
+def test_zoom_window_clamped_and_shifted_at_edge():
+    # Optimum at the max edge: refined window must stay within [min, max]
+    # and keep its zoomed width by shifting inward.
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=11, zoom_factor=10)(specs)
+    points = drive(opt, lambda p: p["x"])  # monotonic increasing -> best at 1.0
+    stage2 = points[11:]
+    xs = [p["x"] for p in stage2]
+    assert min(xs) >= 0.0
+    assert max(xs) == pytest.approx(1.0)
+    # Width preserved (0.1) by shifting the window inward.
+    assert (max(xs) - min(xs)) == pytest.approx(0.1)
+
+
+def test_zoom_min_strategy_centres_on_minimum():
+    specs = [make_spec("x", 0.0, 1.0)]
+    # Parabola with a minimum at 0.3.
+    opt = zoom_grid_optimizer(num_points=11, optimization_type="min")(specs)
+    points = drive(opt, lambda p: (p["x"] - 0.3) ** 2)
+    stage2 = points[11:]
+    xs = [p["x"] for p in stage2]
+    assert np.mean(xs) == pytest.approx(0.3)
+
+
+def test_zoom_zero_strategy_centres_on_root():
+    specs = [make_spec("x", -1.0, 1.0)]
+    # Signal crossing zero at x = 0.2 (coarse node at 0.2 with num_points=11).
+    opt = zoom_grid_optimizer(num_points=11, optimization_type="zero")(specs)
+    points = drive(opt, lambda p: p["x"] - 0.2)
+    stage2 = points[11:]
+    xs = [p["x"] for p in stage2]
+    assert np.mean(xs) == pytest.approx(0.2)
+
+
+def test_zoom_2d_yields_squared_counts_per_stage():
+    specs = [make_spec("x", 0.0, 1.0), make_spec("y", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=4)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2 + (p["y"] - 0.5) ** 2))
+    assert len(points) == 2 * (4 * 4)
+
+
+def test_zoom_default_zoom_factor_is_10():
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=11)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2))
+    xs = [p["x"] for p in points[11:]]
+    assert (max(xs) - min(xs)) == pytest.approx(0.1)  # 1.0 / 10
+
+
+def test_zoom_no_valid_points_returns_gracefully():
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=5)(specs)
+    # All non-finite data -> no centre found -> only stage 1 runs.
+    points = drive(opt, lambda p: float("nan"))
+    assert len(points) == 5
+
+
+def test_zoom_invalid_zoom_factor_raises():
+    with pytest.raises(ValueError):
+        zoom_grid_optimizer(zoom_factor=0)
+    with pytest.raises(ValueError):
+        zoom_grid_optimizer(zoom_factor=-3)
+
+
+def test_zoom_invalid_optimization_type_raises():
+    with pytest.raises(ValueError):
+        zoom_grid_optimizer(optimization_type="sideways")
+
+
+def test_zoom_invalid_num_points_raises():
+    with pytest.raises(ValueError):
+        zoom_grid_optimizer(num_points=0)
+
+
+def test_zoom_warns_for_large_grid():
+    specs = [make_spec(c, 0.0, 1.0) for c in "abc"]  # 3D x 10 = 1000 > 500
+    with pytest.warns(UserWarning, match="Zoom grid search will evaluate"):
+        opt = zoom_grid_optimizer(num_points=10)(specs)
+        drive(opt, lambda p: -sum((v - 0.5) ** 2 for v in p.values()))
