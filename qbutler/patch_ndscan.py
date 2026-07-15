@@ -1,3 +1,4 @@
+import inspect
 import logging
 from typing import Any
 from typing import Tuple
@@ -8,6 +9,14 @@ from ndscan.experiment.scan_generator import generate_points
 from ndscan.experiment.scan_runner import ScanRunner
 
 logger = logging.getLogger(__name__)
+
+# Newer ndscan releases gave ``ScanRunner.acquire`` a ``device_cleanup`` argument
+# (whether to run ``ExpFragment.device_cleanup`` after the scan). qbutler is
+# vendored against pins on both sides of that change, so detect which this
+# ndscan exposes and call accordingly (ndscan's own run loop passes True).
+_ACQUIRE_WANTS_DEVICE_CLEANUP = (
+    "device_cleanup" in inspect.signature(ScanRunner.acquire).parameters
+)
 
 
 def reset_param(self: Fragment, param_name: str) -> Tuple[Any, ParamStore]:
@@ -93,7 +102,12 @@ def _scan_runner_run_with_recalibration(self, fragment, spec, axis_sinks):
         try:
             fragment.host_setup()
             # For on-core-device scans, we'll spawn a kernel here.
-            if self.acquire():
+            done = (
+                self.acquire(device_cleanup=True)
+                if _ACQUIRE_WANTS_DEVICE_CLEANUP
+                else self.acquire()
+            )
+            if done:
                 return
         except CalibrationEscape:
             if fix is None:

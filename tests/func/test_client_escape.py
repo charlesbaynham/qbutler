@@ -121,6 +121,77 @@ def test_dashboard_override_reaches_fragment(device_mgr, dataset_mgr):
     assert exp.fragment.DriftingCal.p.get() == pytest.approx(3.25)
 
 
+class ScannableClient(CalibratedExpFragment):
+    """Client with a plain (non-calibration) scan axis, to exercise the
+    scanned-submission path end to end."""
+
+    def build_fragment(self):
+        self.setattr_device("core")
+        self.setattr_calibration(DriftingCal)
+        self.setattr_param("x", FloatParam, "Scan axis", default=0.0)
+        self.n_runs = 0
+
+    def _count(self):
+        self.n_runs += 1
+
+    @kernel
+    def run_once(self):
+        self._count()
+        self.recalibrate_if_needed()
+
+
+def _scan_params(fqn, num_points):
+    return {
+        "scan": {
+            "axes": [
+                {
+                    "type": "linear",
+                    "range": {
+                        "start": 0.0,
+                        "stop": 1.0,
+                        "num_points": num_points,
+                        "randomise_order": False,
+                    },
+                    "fqn": fqn,
+                    "path": "*",
+                }
+            ],
+            "num_repeats": 1,
+            "no_axes_mode": "single",
+            "randomise_order_globally": False,
+        }
+    }
+
+
+@pytest.mark.withartiq
+def test_scan_axes_escape_fix_and_complete(device_mgr, dataset_mgr):
+    """A scanned submission runs through ndscan's scan loop: the first point
+    escapes for recalibration, the host fixes the DAG, the scan resumes at the
+    interrupted point, and every point lands exactly once."""
+    Experiment = make_calibrated_experiment(ScannableClient)
+
+    probe = Experiment((device_mgr, dataset_mgr, ProcessArgumentManager({}), None))
+    x_fqn = probe.fragment._free_params["x"].fqn
+
+    exp = Experiment(
+        (
+            device_mgr,
+            dataset_mgr,
+            ProcessArgumentManager(
+                {PARAMS_ARG_KEY: pyon.encode(_scan_params(x_fqn, 3))}
+            ),
+            None,
+        )
+    )
+    exp.prepare()
+    exp.run()
+
+    frag = exp.fragment
+    # One escape (first point re-runs after the fix) then the three scan points.
+    assert frag.n_runs == 4
+    assert frag.DriftingCal.p.get() == pytest.approx(7.0)
+
+
 @pytest.mark.withartiq
 def test_escape_fix_and_reenter(experiment_factory):
     exp = _wrap(experiment_factory, EscapingClient)
