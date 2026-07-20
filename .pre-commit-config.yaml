@@ -12,7 +12,7 @@ repos:
 
 # Sort python imports
 - repo: https://github.com/PyCQA/isort
-  rev: 9.0.0a3
+  rev: 9.0.0b1
   hooks:
   - id: isort
     args: [--profile, black, --force-single-line-imports]
