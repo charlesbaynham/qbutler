@@ -337,3 +337,64 @@ def test_zoom_warns_for_large_grid():
     with pytest.warns(UserWarning, match="Zoom grid search will evaluate"):
         opt = zoom_grid_optimizer(num_points=10)(specs)
         drive(opt, lambda p: -sum((v - 0.5) ** 2 for v in p.values()))
+
+
+def test_zoom_default_n_stages_is_two():
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=5)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2))
+    assert len(points) == 2 * 5
+
+
+def test_zoom_n_stages_yields_that_many_grids():
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=7, n_stages=4)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2))
+    assert len(points) == 4 * 7
+
+
+def test_zoom_n_stages_one_is_plain_grid():
+    specs = [make_spec("x", 2.0, 8.0)]
+    opt = zoom_grid_optimizer(num_points=7, n_stages=1)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 5.0) ** 2))
+    xs = [p["x"] for p in points]
+    assert len(points) == 7  # coarse scan only, no refinement
+    assert xs[0] == pytest.approx(2.0)
+    assert xs[-1] == pytest.approx(8.0)
+
+
+def test_zoom_each_stage_narrows_by_zoom_factor():
+    # Full range 1.0; each successive stage's window is zoom_factor (10x)
+    # narrower than the last: 1.0 -> 0.1 -> 0.01.
+    specs = [make_spec("x", 0.0, 1.0)]
+    opt = zoom_grid_optimizer(num_points=11, zoom_factor=10, n_stages=3)(specs)
+    points = drive(opt, lambda p: -((p["x"] - 0.5) ** 2))
+    widths = []
+    for stage in range(3):
+        xs = [p["x"] for p in points[stage * 11 : (stage + 1) * 11]]
+        widths.append(max(xs) - min(xs))
+    assert widths[0] == pytest.approx(1.0)
+    assert widths[1] == pytest.approx(0.1)
+    assert widths[2] == pytest.approx(0.01)
+
+
+def test_zoom_more_stages_refine_estimate_further():
+    # An optimum the coarse grid misses; more zoom stages get strictly closer.
+    center = 0.523456
+    specs = [make_spec("x", 0.0, 1.0)]
+
+    def objective(p):
+        return -((p["x"] - center) ** 2)
+
+    two = drive(zoom_grid_optimizer(num_points=11, n_stages=2)(specs), objective)
+    four = drive(zoom_grid_optimizer(num_points=11, n_stages=4)(specs), objective)
+    best_two = max(two, key=objective)
+    best_four = max(four, key=objective)
+    assert abs(best_four["x"] - center) < abs(best_two["x"] - center)
+
+
+def test_zoom_invalid_n_stages_raises():
+    with pytest.raises(ValueError):
+        zoom_grid_optimizer(n_stages=0)
+    with pytest.raises(ValueError):
+        zoom_grid_optimizer(n_stages=-2)

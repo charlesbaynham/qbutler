@@ -157,33 +157,39 @@ def _refined_axis(spec, center, num_points, zoom_factor):
 
 
 def zoom_grid_optimizer(
-    num_points=NUM_SCAN_POINT, zoom_factor=10, optimization_type="max"
+    num_points=NUM_SCAN_POINT, zoom_factor=10, n_stages=2, optimization_type="max"
 ):
-    """Two-stage "zoom" grid search.
+    """Iterative "zoom" grid search over ``n_stages`` stages.
 
     Stage 1 scans the full ``[min, max]`` grid exactly like
-    :func:`grid_search_optimizer`. It then picks the best point (per
-    ``optimization_type``) and, in stage 2, re-scans the same number of points
-    per axis over a window centred on that point whose width is ``zoom_factor``
-    times smaller, refining the estimate of the optimum.
+    :func:`grid_search_optimizer`. Each subsequent stage picks the best point
+    seen so far (per ``optimization_type``) and re-scans the same number of
+    points per axis over a window centred on it, each stage ``zoom_factor``
+    times narrower than the last. With ``n_stages=2`` (the default) this is a
+    single coarse scan followed by one refinement; larger ``n_stages`` keeps
+    zooming in, the window at stage ``k`` being ``zoom_factor ** (k - 1)`` times
+    smaller than the full range.
 
     Unlike :func:`grid_search_optimizer`, this optimizer consumes the
     ``(result, data)`` feedback sent for each point in order to locate the
-    stage-1 optimum. A point is eligible to become the stage-1 centre only if
-    its result is ``OK`` and its ``data`` is a finite real number (``OK == 0``
-    is compared via ``int(result)`` so this module stays free of qbutler
-    imports). The driving :class:`Calibration` remains the sole authority on
-    which point is ultimately chosen across both stages.
+    running optimum. A point is eligible to become a centre only if its result
+    is ``OK`` and its ``data`` is a finite real number (``OK == 0`` is compared
+    via ``int(result)`` so this module stays free of qbutler imports). The
+    driving :class:`Calibration` remains the sole authority on which point is
+    ultimately chosen across all stages.
 
     This is a factory: it returns a generator function suitable for
     :meth:`Calibration.set_optimizer`, e.g.
-    ``self.set_optimizer(zoom_grid_optimizer(zoom_factor=10))``.
+    ``self.set_optimizer(zoom_grid_optimizer(zoom_factor=10, n_stages=3))``.
 
     Args:
         num_points: Number of evenly-spaced points along each axis, in *each*
             stage.
-        zoom_factor: How much smaller the stage-2 window is than the full range
-            (default 10, i.e. one tenth of the width).
+        zoom_factor: How much narrower each stage's window is than the previous
+            stage's (default 10, i.e. one tenth of the width per zoom).
+        n_stages: Total number of stages, including the initial full-range scan
+            (default 2: coarse + one refinement). Must be >= 1; ``n_stages=1``
+            is a plain full-range grid scan.
         optimization_type: ``"max"`` (default), ``"min"`` or ``"zero"``. Must
             match the Calibration's own optimization type so the refinement
             centres on the right point.
@@ -195,6 +201,8 @@ def zoom_grid_optimizer(
         raise ValueError(f"zoom_factor must be positive, got {zoom_factor}")
     if num_points < 1:
         raise ValueError(f"num_points must be >= 1, got {num_points}")
+    if n_stages < 1:
+        raise ValueError(f"n_stages must be >= 1, got {n_stages}")
     optimization_type = optimization_type.lower()
     if optimization_type not in ("max", "min", "zero"):
         raise ValueError(f"Unknown optimization_type: {optimization_type!r}")
@@ -204,18 +212,18 @@ def zoom_grid_optimizer(
         n_points = num_points**n_params
         if n_points > 500:
             warnings.warn(
-                f"Zoom grid search will evaluate up to {2 * n_points} points "
-                f"({n_params}D × {num_points} points × 2 stages). "
+                f"Zoom grid search will evaluate up to {n_stages * n_points} points "
+                f"({n_params}D × {num_points} points × {n_stages} stages). "
                 "Consider using a custom optimizer for high-dimensional spaces.",
                 UserWarning,
             )
 
         names = [spec.name for spec in param_specs]
-        coarse_axes = [np.linspace(s.min, s.max, num_points) for s in param_specs]
 
         logger.debug(
-            "Running zoom grid search (zoom_factor=%s, %s) over: %s",
+            "Running zoom grid search (zoom_factor=%s, n_stages=%s, %s) over: %s",
             zoom_factor,
+            n_stages,
             optimization_type,
             names,
         )
@@ -223,31 +231,37 @@ def zoom_grid_optimizer(
         best_value = None
         best_point = None
 
-        # Stage 1: full-range coarse grid.
-        for point in itertools.product(*coarse_axes):
-            params = dict(zip(names, point))
-            result, data = yield params
-            ok = int(result) == 0  # CalibrationResult.OK == 0
-            if ok and isinstance(data, (int, float)) and np.isfinite(data):
-                if _better(data, best_value, optimization_type):
-                    best_value = data
-                    best_point = params
+        for stage in range(n_stages):
+            if stage == 0:
+                # Full-range coarse grid.
+                axes = [np.linspace(s.min, s.max, num_points) for s in param_specs]
+            else:
+                # Refined grid centred on the best point so far, each stage
+                # zoom_factor times narrower than the previous one.
+                axes = [
+                    _refined_axis(s, best_point[s.name], num_points, zoom_factor**stage)
+                    for s in param_specs
+                ]
 
-        if best_point is None:
-            # Nothing usable in stage 1; let the driver raise on no valid params.
-            return None
+            for point in itertools.product(*axes):
+                params = dict(zip(names, point))
+                result, data = yield params
+                ok = int(result) == 0  # CalibrationResult.OK == 0
+                if ok and isinstance(data, (int, float)) and np.isfinite(data):
+                    if _better(data, best_value, optimization_type):
+                        best_value = data
+                        best_point = params
 
-        logger.debug(
-            "Zoom stage 1 optimum %s (value=%s); refining", best_point, best_value
-        )
+            if best_point is None:
+                # Nothing usable yet; let the driver raise on no valid params.
+                return None
 
-        # Stage 2: refined grid centred on the stage-1 optimum.
-        refined_axes = [
-            _refined_axis(s, best_point[s.name], num_points, zoom_factor)
-            for s in param_specs
-        ]
-        for point in itertools.product(*refined_axes):
-            yield dict(zip(names, point))
+            logger.debug(
+                "Zoom stage %s optimum %s (value=%s)",
+                stage + 1,
+                best_point,
+                best_value,
+            )
 
         return None
 
