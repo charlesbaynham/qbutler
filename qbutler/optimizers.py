@@ -57,3 +57,212 @@ def grid_search_optimizer(param_specs, num_points=NUM_SCAN_POINT):
 
     for point in itertools.product(*axes):
         yield dict(zip(names, point))
+
+
+def coordinate_descent_optimizer(param_specs, num_points=7, n_rounds=2):
+    """Optimize one parameter at a time (a "walk-in"), using feedback.
+
+    Round ``r`` scans each axis over a window of width ``(max - min) / 2**r``
+    centred on the current best value, clamped to ``[min, max]``, with
+    ``num_points`` evenly-spaced candidates. After each axis sweep the
+    current point moves to the best OK candidate; if no candidate was OK the
+    axis keeps its previous value. Total evaluations:
+    ``n_rounds * len(param_specs) * num_points``.
+
+    Assumes the optimization target is "max" (larger data = better).
+
+    Feedback protocol: ``result, data = yield {name: value, ...}``, where
+    ``result`` is the CalibrationResult of measuring the yielded point
+    (OK == 0; compared via ``int(result)`` so this module stays free of
+    qbutler imports) and ``data`` is the metric.
+
+    Returns the best ``{name: value}`` dict via ``StopIteration.value``.
+    """
+    current = {spec.name: spec.handle.get() for spec in param_specs}
+
+    logger.debug(
+        "Coordinate descent over %s from %s (%s rounds, %s points/axis)",
+        [s.name for s in param_specs],
+        current,
+        n_rounds,
+        num_points,
+    )
+
+    for rnd in range(n_rounds):
+        for spec in param_specs:
+            centre = current[spec.name]
+            half_window = (spec.max - spec.min) / 2 ** (rnd + 1)
+            lo = max(spec.min, centre - half_window)
+            hi = min(spec.max, centre + half_window)
+
+            best_value = None
+            best_data = None
+            for v in np.linspace(lo, hi, num_points):
+                result, data = yield {**current, spec.name: float(v)}
+                if int(result) != 0 or not isinstance(data, (int, float)):
+                    continue
+                if best_data is None or data > best_data:
+                    best_data, best_value = data, float(v)
+
+            if best_value is not None:
+                current[spec.name] = best_value
+            logger.debug(
+                "Round %s axis %s: best %s (data %s)",
+                rnd,
+                spec.name,
+                best_value,
+                best_data,
+            )
+
+    return current
+
+
+def _better(candidate, incumbent, optimization_type):
+    """Return True if ``candidate`` beats ``incumbent`` under the given strategy.
+
+    Mirrors :meth:`Calibration._is_better` so the zoom optimizer centres its
+    refinement on the same point the driver would ultimately select.
+    """
+    if incumbent is None:
+        return True
+    if optimization_type == "max":
+        return candidate > incumbent
+    if optimization_type == "min":
+        return candidate < incumbent
+    if optimization_type == "zero":
+        return abs(candidate) < abs(incumbent)
+    raise ValueError(f"Unknown optimization_type: {optimization_type!r}")
+
+
+def _refined_axis(spec, center, num_points, zoom_factor):
+    """A linearly-spaced axis of ``num_points`` centred on ``center``.
+
+    The window spans the original ``[min, max]`` range shrunk by
+    ``zoom_factor`` and is clamped to ``[min, max]``. Where the range allows,
+    a window that overruns an edge is shifted back inside the bounds so it
+    keeps its full (zoomed) width instead of being truncated.
+    """
+    span = (spec.max - spec.min) / zoom_factor
+    lo = center - span / 2
+    hi = center + span / 2
+    if lo < spec.min:
+        hi += spec.min - lo
+        lo = spec.min
+    if hi > spec.max:
+        lo -= hi - spec.max
+        hi = spec.max
+    lo = max(lo, spec.min)
+    hi = min(hi, spec.max)
+    return np.linspace(lo, hi, num_points)
+
+
+def zoom_grid_optimizer(
+    num_points=NUM_SCAN_POINT, zoom_factor=10, n_stages=2, optimization_type="max"
+):
+    """Iterative "zoom" grid search over ``n_stages`` stages.
+
+    Stage 1 scans the full ``[min, max]`` grid exactly like
+    :func:`grid_search_optimizer`. Each subsequent stage picks the best point
+    seen so far (per ``optimization_type``) and re-scans the same number of
+    points per axis over a window centred on it, each stage ``zoom_factor``
+    times narrower than the last. With ``n_stages=2`` (the default) this is a
+    single coarse scan followed by one refinement; larger ``n_stages`` keeps
+    zooming in, the window at stage ``k`` being ``zoom_factor ** (k - 1)`` times
+    smaller than the full range.
+
+    Unlike :func:`grid_search_optimizer`, this optimizer consumes the
+    ``(result, data)`` feedback sent for each point in order to locate the
+    running optimum. A point is eligible to become a centre only if its result
+    is ``OK`` and its ``data`` is a finite real number (``OK == 0`` is compared
+    via ``int(result)`` so this module stays free of qbutler imports). The
+    driving :class:`Calibration` remains the sole authority on which point is
+    ultimately chosen across all stages.
+
+    This is a factory: it returns a generator function suitable for
+    :meth:`Calibration.set_optimizer`, e.g.
+    ``self.set_optimizer(zoom_grid_optimizer(zoom_factor=10, n_stages=3))``.
+
+    Args:
+        num_points: Number of evenly-spaced points along each axis, in *each*
+            stage.
+        zoom_factor: How much narrower each stage's window is than the previous
+            stage's (default 10, i.e. one tenth of the width per zoom).
+        n_stages: Total number of stages, including the initial full-range scan
+            (default 2: coarse + one refinement). Must be >= 1; ``n_stages=1``
+            is a plain full-range grid scan.
+        optimization_type: ``"max"`` (default), ``"min"`` or ``"zero"``. Must
+            match the Calibration's own optimization type so the refinement
+            centres on the right point.
+
+    Returns:
+        Callable[[list[ParamSpec]], Generator]: an optimizer generator function.
+    """
+    if zoom_factor <= 0:
+        raise ValueError(f"zoom_factor must be positive, got {zoom_factor}")
+    if num_points < 1:
+        raise ValueError(f"num_points must be >= 1, got {num_points}")
+    if n_stages < 1:
+        raise ValueError(f"n_stages must be >= 1, got {n_stages}")
+    optimization_type = optimization_type.lower()
+    if optimization_type not in ("max", "min", "zero"):
+        raise ValueError(f"Unknown optimization_type: {optimization_type!r}")
+
+    def optimizer(param_specs):
+        n_params = len(param_specs)
+        n_points = num_points**n_params
+        if n_points > 500:
+            warnings.warn(
+                f"Zoom grid search will evaluate up to {n_stages * n_points} points "
+                f"({n_params}D × {num_points} points × {n_stages} stages). "
+                "Consider using a custom optimizer for high-dimensional spaces.",
+                UserWarning,
+            )
+
+        names = [spec.name for spec in param_specs]
+
+        logger.debug(
+            "Running zoom grid search (zoom_factor=%s, n_stages=%s, %s) over: %s",
+            zoom_factor,
+            n_stages,
+            optimization_type,
+            names,
+        )
+
+        best_value = None
+        best_point = None
+
+        for stage in range(n_stages):
+            if stage == 0:
+                # Full-range coarse grid.
+                axes = [np.linspace(s.min, s.max, num_points) for s in param_specs]
+            else:
+                # Refined grid centred on the best point so far, each stage
+                # zoom_factor times narrower than the previous one.
+                axes = [
+                    _refined_axis(s, best_point[s.name], num_points, zoom_factor**stage)
+                    for s in param_specs
+                ]
+
+            for point in itertools.product(*axes):
+                params = dict(zip(names, point))
+                result, data = yield params
+                ok = int(result) == 0  # CalibrationResult.OK == 0
+                if ok and isinstance(data, (int, float)) and np.isfinite(data):
+                    if _better(data, best_value, optimization_type):
+                        best_value = data
+                        best_point = params
+
+            if best_point is None:
+                # Nothing usable yet; let the driver raise on no valid params.
+                return None
+
+            logger.debug(
+                "Zoom stage %s optimum %s (value=%s)",
+                stage + 1,
+                best_point,
+                best_value,
+            )
+
+        return None
+
+    return optimizer

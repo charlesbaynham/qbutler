@@ -2,6 +2,7 @@ import pytest
 
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
+from qbutler.optimizers import zoom_grid_optimizer
 
 
 class ParamsCalibration(Calibration):
@@ -231,3 +232,32 @@ def test_grid_search_4d_max(fragment_factory):
     assert abs(c.y.get() - center[1]) < 0.15
     assert abs(c.z.get() - center[2]) < 0.15
     assert abs(c.w.get() - center[3]) < 0.15
+
+
+def test_zoom_grid_optimizer_refines_beyond_coarse_grid(fragment_factory):
+    # Optimum deliberately placed between coarse-grid nodes so a single-pass
+    # grid search can only get within half a grid spacing (~0.1 over [-1, 1]
+    # with 11 points), but the zoom pass should land far closer.
+    center_x, center_y = 0.37, -0.24
+    sigma = 0.5
+
+    class Gaussian2DZoom(Calibration):
+        def build_calibration(self):
+            self.setattr_param_optimizable("x", "X", -1, 1, default=0.0)
+            self.setattr_param_optimizable("y", "Y", -1, 1, default=0.0)
+            self.set_optimization_type("max")
+            self.set_optimizer(zoom_grid_optimizer(zoom_factor=10))
+
+        def check_own_state(self):
+            x = self.x.get()
+            y = self.y.get()
+            g = np.exp(-((x - center_x) ** 2 + (y - center_y) ** 2) / (2 * sigma**2))
+            return CalibrationResult.OK, g
+
+    c = fragment_factory(Gaussian2DZoom)
+    c.fix_state(force=True)
+
+    assert c.check_state()[0] == CalibrationResult.OK
+    # Far tighter than the 0.15 the coarse grid alone achieves.
+    assert abs(c.x.get() - center_x) < 0.02
+    assert abs(c.y.get() - center_y) < 0.02

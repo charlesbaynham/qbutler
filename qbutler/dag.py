@@ -7,10 +7,45 @@ from typing import Type
 
 import networkx as nx
 
+from . import ccb
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .calibration import Calibration
+
+#: Broadcast dataset holding {"nodes": [...], "edges": [[parent, dependency], ...]}
+#: describing the currently-instantiated calibration DAG (class names).
+DAG_DATASET = "calibrations.dag"
+
+
+def publish_dag(cal: "Calibration") -> None:
+    """Best-effort publish of the DAG structure to :data:`DAG_DATASET`.
+
+    Also ensures the calibration-DAG overview applet exists, so the tree is
+    visualised as soon as any walk runs. Never raises: dataset plumbing must
+    not be able to break a calibration run. ``cal`` is used for its
+    ``set_dataset`` and to reach the ``ccb`` device.
+    """
+    ccb.create_dag_applet(cal)
+    try:
+        G = _get_graph()
+        nodes = sorted({type(r()).__name__ for r in G.nodes if r() is not None})
+        edges = sorted(
+            [type(a()).__name__, type(b()).__name__]
+            for a, b in G.edges
+            if a() is not None and b() is not None
+        )
+        cal.set_dataset(
+            DAG_DATASET,
+            {"nodes": nodes, "edges": edges},
+            broadcast=True,
+            persist=True,
+            archive=False,
+        )
+    except Exception:
+        logger.warning("Could not publish calibration DAG", exc_info=True)
+
 
 # See docstring for add_to_dependency_map
 _dependency_map = []
@@ -56,7 +91,7 @@ def add_to_dependency_map(cal_object, dependent_cal_object):
     _dag_valid = False
 
 
-def get_dependencies(obj, furthest_first=True) -> List:
+def get_dependencies(obj, furthest_first=True) -> List["Calibration"]:
     """
     Return a list of a Calibration's dependent objects, including the calibration itself
     """
@@ -72,6 +107,37 @@ def get_dependencies(obj, furthest_first=True) -> List:
 
     # Dereference the weakrefs and return
     return [t() for t, _ in targets_and_distances]
+
+
+def get_union_dependencies(targets, furthest_first=True) -> List:
+    """Merge several targets' dependency lists into one walk order.
+
+    Every node in the union of the targets' DAGs appears exactly once. A node is
+    ordered by its *greatest* distance from any target, so a dependency shared by
+    several targets is placed ahead of every node that depends on it — walking
+    this order fixes a shared node once, before its dependents. With a single
+    target this reduces to :func:`get_dependencies`.
+
+    Args:
+        targets: an iterable of :class:`~qbutler.calibration.Calibration`
+            instances (the leaf calibrations a client maintains).
+
+    Returns:
+        List: the deduplicated calibration objects, furthest dependency first.
+    """
+    max_distance = {}
+    for target in targets:
+        G = _get_graph_containing_calibration(target)
+        paths = nx.single_source_shortest_path(G, weakref.ref(target))
+        for ref, path in paths.items():
+            distance = len(path)
+            if ref not in max_distance or distance > max_distance[ref]:
+                max_distance[ref] = distance
+
+    ordered = sorted(
+        max_distance.items(), key=lambda item: item[1], reverse=furthest_first
+    )
+    return [ref() for ref, _ in ordered]
 
 
 def get_calibrations_of_type(obj_type: Type["Calibration"]) -> List["Calibration"]:
