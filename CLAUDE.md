@@ -2,23 +2,13 @@
 
 ## Reference repositories
 
-Clone these locally before working on qbutler — reading their source is essential:
+The Nix-pinned dependencies (`artiq`, `ndscan`, `oitg`) are shallow-cloned at session start into `.claude/deps/<name>/` at the exact revs from `flake.lock`, by `.claude/clone-deps.sh` (run via the SessionStart hook configured in `.claude/settings.json`). The clone is idempotent — it compares `HEAD` against the target rev and skips if already current. `jq` is required.
 
-- **icl_experiments** — the only current user of qbutler; a large collection of real experiments. Use it to understand how qbutler is used in practice.
-  ```
-  git clone https://gitlab.com/aion-physics/code/artiq/experiment-repositories/icl_experiments
-  ```
+`icl_experiments` is qbutler's only current downstream user and the best reference for how qbutler is used in practice. It isn't pinned in `flake.lock`, so clone it manually if you need it:
 
-- **ndscan** (fork) — defines the `Fragment` / `ExpFragment` base classes and the parameter/scan framework that qbutler builds on. Use the fork, not the upstream, as qbutler depends on fork-specific behaviour.
-  ```
-  git clone https://gitlab.com/aion-physics/code/artiq/forks/ndscan.git
-  cd ndscan && git checkout transitive-rebinding-qt5
-  ```
-
-- **ARTIQ** (fork) — the underlying experiment control framework; source of truth for `EnvExperiment`, kernels, and hardware abstractions.
-  ```
-  git clone https://gitlab.com/aion-physics/code/artiq/forks/artiq_fork.git
-  ```
+```
+git clone https://gitlab.com/aion-physics/code/artiq/experiment-repositories/icl_experiments
+```
 
 ## What qbutler does
 
@@ -28,12 +18,18 @@ qbutler manages chains of interdependent physics calibrations that drift over ti
 
 ```bash
 poetry install
-poetry run pytest              # fast tests
-poetry run pytest --runslow    # include slow tests
+poetry run pytest                # default suite
+poetry run pytest --withartiq    # include tests that need the ARTIQ kernel emulator
 poetry run pre-commit run --all-files  # lint + format
 ```
 
-Tests are fully mocked — no live ARTIQ master needed (though Nix-based integration testing is likely coming).
+Tests are fully mocked by default — no live ARTIQ master needed. The `--withartiq` suite covers tests that exercise real ARTIQ tooling (kernel execution against the emulator, full-stack `artiq_master` runs); it requires `LIBARTIQ_EMULATOR` to be set, which the Nix dev shell does for you.
+
+Some `--withartiq` tests are additionally marked `fullstack` — they spin up a real `artiq_master` process and submit jobs via `artiq_client`, which requires IPv6 socket support. These pass in CI (GitHub Actions) but fail in Claude Code Web sessions (`CLAUDE_CODE_REMOTE=true`), which run in a sandboxed container without IPv6. Skip them with `--no-fullstack`:
+
+```bash
+nix develop . --command python -m pytest tests/ --withartiq --no-fullstack
+```
 
 ## Architecture
 
