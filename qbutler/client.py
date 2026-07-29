@@ -443,8 +443,10 @@ def make_calibrated_experiment(
     class _CalibratedScanShim(FragmentScanExperiment):
         def build(self):
             # Earliest worker entry point: the IPC transaction lock must
-            # precede any thread qbutler ever starts.
-            install_worker_ipc_lock()
+            # precede any thread qbutler ever starts. Passing self also
+            # de-aliases the dataset broadcaster, which captured its parent
+            # action at worker startup and so escapes the class-level wrap.
+            install_worker_ipc_lock(self)
             super().build(
                 lambda: fragment_class(self, [], *args),
                 max_rtio_underflow_retries=max_rtio_underflow_retries,

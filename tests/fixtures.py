@@ -5,8 +5,10 @@ import logging
 import os
 import random as rand
 import subprocess as sp
+import sys
 import textwrap
 import time
+import types
 from pathlib import Path
 from typing import Callable
 from typing import Type
@@ -291,6 +293,35 @@ def mock_core(device_mgr):
     This can be used to keep track of the number of times a kernel has been executed
     """
     return device_mgr.get("core").comm.run
+
+
+@fixture
+def worker_main(monkeypatch):
+    """Reproduce the ARTIQ worker's module topology.
+
+    The worker is spawned as ``python -m artiq.master.worker_impl``, so the
+    module that actually runs is ``sys.modules["__main__"]``; any ``import
+    artiq.master.worker_impl`` inside the worker yields a *second, dead copy*
+    with its own globals. Code that patches worker internals must target the
+    former, and a test that just imports the module cannot tell the difference
+    (see tests/func/test_monitoring_thread_safety.py).
+
+    Yields ``(main, imported)``. The source is exec'd under its dotted name so
+    the ``if __name__ == "__main__": main()`` guard does not fire.
+    """
+    import artiq.master.worker_impl as imported
+
+    import qbutler.worker_ipc_lock as worker_ipc_lock
+
+    source = Path(imported.__file__).read_text()
+    main = types.ModuleType("artiq.master.worker_impl")
+    main.__file__ = imported.__file__
+    exec(compile(source, imported.__file__, "exec"), main.__dict__)
+
+    monkeypatch.setitem(sys.modules, "__main__", main)
+    monkeypatch.setattr(worker_ipc_lock, "_installed", False)
+
+    yield main, imported
 
 
 @fixture(scope="session", autouse=True)

@@ -42,7 +42,6 @@ MonitorMaster
 
 import asyncio
 import logging
-import threading
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -56,55 +55,9 @@ from ndscan.experiment.entry_point import make_fragment_scan_exp
 
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
+from qbutler.worker_ipc_lock import install_worker_ipc_lock
 
 logger = logging.getLogger(__name__)
-
-
-def patch_artiq_threading():
-    """
-    Patch ARTIQ's get_object and put_object to use a threading lock
-
-    This prevents multiple threads from accessing the master at the same time,
-    which would cause errors.
-
-    This is required because connection to the ARTIQ master are not thread-safe,
-    but our monitors are being launched in separate threads.
-
-    Every ``parent_action`` round trip (see ``artiq.master.worker_impl``) writes
-    a request with ``put_object`` and *then* reads the matching reply with
-    ``get_object``, always from the same thread. To serialise a whole round
-    trip against other threads' round trips, the lock must therefore be
-    acquired in ``put_object`` (before the request is written) and released in
-    ``get_object`` (after the reply is read) - the reverse of that ordering
-    leaves the write/read gap completely unlocked, so concurrent threads' lines
-    can still interleave on the shared IPC pipe.
-    """
-    import artiq.master.worker_impl as worker_impl
-
-    thread_lock = threading.RLock()
-
-    get_object_original = worker_impl.get_object
-    put_object_original = worker_impl.put_object
-
-    def put_object_patched(*arg, **kwargs):
-        # Acquire a lock to prevent multiple threads from accessing the master at
-        # the same time. It will be released when get_object is next called,
-        # which always follows (it reads the reply to this same request).
-        logger.debug("put_object_patched acquiring lock")
-        thread_lock.acquire()
-        return put_object_original(*arg, **kwargs)
-
-    worker_impl.put_object = put_object_patched
-
-    def get_object_patched(*arg, **kwargs):
-        try:
-            return get_object_original(*arg, **kwargs)
-
-        finally:
-            logger.debug("get_object_patched releasing lock")
-            thread_lock.release()
-
-    worker_impl.get_object = get_object_patched
 
 
 def make_monitor_controller(
@@ -165,10 +118,16 @@ def make_monitor_controller(
             Default pipeline for the monitors to run in
     """
 
-    patch_artiq_threading()
-
     class MonitorController(ExpFragment):
         def build_fragment(self):
+            # Earliest worker entry point: the IPC transaction lock must
+            # precede any thread this controller starts. run_monitor() drives
+            # every monitor's check_state on the default executor's threads,
+            # concurrently with wait_for_termination()'s scheduler.check_pause()
+            # on the main thread - two unsynchronised users of the one worker
+            # IPC pipe.
+            install_worker_ipc_lock(self)
+
             self.setattr_device("scheduler")
             self.scheduler: Scheduler
 
