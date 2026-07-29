@@ -22,6 +22,13 @@ The worker runs ``worker_impl`` as ``__main__`` (spawned with
 ``-m artiq.master.worker_impl``), so the live module is found in
 ``sys.modules`` rather than imported — importing it here would execute a
 second, dead copy.
+
+One parent action escapes the class/module sweep: ``DatasetManager.__init__``
+does ``self._broadcaster.publish = ddb.update`` (``artiq/master/worker_db.py``),
+capturing ``ParentDatasetDB.update`` into the notifier at *worker startup*,
+before any experiment code runs. Rebinding the class attribute cannot reach
+that alias, so :func:`_lock_dataset_broadcaster` re-wraps it in place given the
+experiment's environment.
 """
 
 import inspect
@@ -36,20 +43,44 @@ _ipc_lock = threading.RLock()
 _installed = False
 
 
-def install_worker_ipc_lock() -> None:
+def install_worker_ipc_lock(env=None) -> None:
     """Serialise all worker→master parent transactions under one RLock.
 
     Idempotent. A no-op outside an ARTIQ worker (tests, ``artiq_run``, the
-    master process itself).
+    master process itself) — and, crucially, *not* latched in that case, so a
+    later call from inside a real worker still installs.
+
+    Args:
+        env: The experiment / fragment (any :class:`~artiq.language.environment.
+            HasEnvironment`) whose dataset manager should also be de-aliased.
+            Without it the broadcast ``set_dataset`` path stays unlocked; see
+            the module docstring.
     """
     global _installed
-    if _installed:
-        return
-    module = _find_worker_module()
-    if module is not None:
-        count = _wrap_parent_actions(module)
-        logger.debug("Locked %d worker parent actions", count)
-    _installed = True
+    if not _installed:
+        module = _find_worker_module()
+        if module is not None:
+            count = _wrap_parent_actions(module)
+            logger.debug("Locked %d worker parent actions", count)
+            _installed = True
+    if env is not None:
+        _lock_dataset_broadcaster(env)
+
+
+def _lock_dataset_broadcaster(env) -> bool:
+    """Re-wrap the parent action captured by ``DatasetManager`` at startup.
+
+    Returns True if it wrapped something. Idempotent, and a no-op when ``env``
+    is not a real worker-side environment.
+    """
+    mgr = getattr(env, "_HasEnvironment__dataset_mgr", None)
+    broadcaster = getattr(mgr, "_broadcaster", None)
+    publish = getattr(broadcaster, "publish", None)
+    if not _is_unwrapped_parent_action(publish):
+        return False
+    broadcaster.publish = _locked(publish)
+    logger.debug("Locked the dataset broadcaster's captured parent action")
+    return True
 
 
 def _find_worker_module():

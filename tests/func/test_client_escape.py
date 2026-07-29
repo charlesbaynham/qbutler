@@ -19,7 +19,6 @@ from ndscan.utils import PARAMS_ARG_KEY
 from sipyco import pyon
 
 from qbutler import dag
-from qbutler import worker_ipc_lock
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 from qbutler.client import CalibratedExpFragment
@@ -81,15 +80,20 @@ def test_wrapper_is_ndscan_native():
     assert Experiment.__name__ == "EscapingClient"
 
 
-def test_build_installs_ipc_lock(experiment_factory):
+def test_build_installs_ipc_lock(worker_main, experiment_factory):
     """The transaction lock is armed at the earliest worker entry point,
-    before any thread qbutler ever starts."""
-    worker_ipc_lock._installed = False
-    try:
-        experiment_factory(make_calibrated_experiment(EscapingClient))  # build()
-        assert worker_ipc_lock._installed
-    finally:
-        worker_ipc_lock._installed = True
+    before any thread qbutler ever starts.
+
+    Asserts against the module the worker really runs (``__main__``), not the
+    ``_installed`` flag: the flag alone would be satisfied by wrapping an
+    imported copy that nothing executing ever reads.
+    """
+    main, _ = worker_main
+
+    experiment_factory(make_calibrated_experiment(EscapingClient))  # build()
+
+    assert main.ParentDatasetDB.get._qbutler_ipc_locked
+    assert main.CCB.issue._qbutler_ipc_locked
 
 
 def test_params_schema_exposes_fragment_tree(experiment_factory):
