@@ -69,6 +69,15 @@ def patch_artiq_threading():
 
     This is required because connection to the ARTIQ master are not thread-safe,
     but our monitors are being launched in separate threads.
+
+    Every ``parent_action`` round trip (see ``artiq.master.worker_impl``) writes
+    a request with ``put_object`` and *then* reads the matching reply with
+    ``get_object``, always from the same thread. To serialise a whole round
+    trip against other threads' round trips, the lock must therefore be
+    acquired in ``put_object`` (before the request is written) and released in
+    ``get_object`` (after the reply is read) - the reverse of that ordering
+    leaves the write/read gap completely unlocked, so concurrent threads' lines
+    can still interleave on the shared IPC pipe.
     """
     import artiq.master.worker_impl as worker_impl
 
@@ -77,25 +86,25 @@ def patch_artiq_threading():
     get_object_original = worker_impl.get_object
     put_object_original = worker_impl.put_object
 
-    def get_object_patched(*arg, **kwargs):
-        # Acquire a lock to prevent multiple threads from accessing the master at
-        # the same time. It will be released when put_object is next called,
-        # which always follows.
-        logger.debug("get_object_patched acquiring lock")
-        thread_lock.acquire()
-        return get_object_original(*arg, **kwargs)
-
-    worker_impl.get_object = get_object_patched
-
     def put_object_patched(*arg, **kwargs):
-        try:
-            return put_object_original(*arg, **kwargs)
-
-        finally:
-            logger.debug("put_object_patched releasing lock")
-            thread_lock.release()
+        # Acquire a lock to prevent multiple threads from accessing the master at
+        # the same time. It will be released when get_object is next called,
+        # which always follows (it reads the reply to this same request).
+        logger.debug("put_object_patched acquiring lock")
+        thread_lock.acquire()
+        return put_object_original(*arg, **kwargs)
 
     worker_impl.put_object = put_object_patched
+
+    def get_object_patched(*arg, **kwargs):
+        try:
+            return get_object_original(*arg, **kwargs)
+
+        finally:
+            logger.debug("get_object_patched releasing lock")
+            thread_lock.release()
+
+    worker_impl.get_object = get_object_patched
 
 
 def make_monitor_controller(
