@@ -507,3 +507,18 @@ def reset_pause_check_gate():
     pause_check_gate.reset()
     yield
     pause_check_gate.reset()
+
+
+@fixture(autouse=True)
+def reset_active_calibration():
+    """Drop the process-wide active-calibration slot around every test.
+
+    The slot holds a strong reference to the last-activated node; without this
+    a node from one test would survive into the next (and get a spurious
+    host_cleanup on the next handover).
+    """
+    from qbutler import calibration
+
+    calibration._active_node = None
+    yield
+    calibration._active_node = None

@@ -46,6 +46,20 @@ def setattr_calibration(
 
     self.setattr_fragment(name, calibration_class, *args, **kwargs)
 
+    # A calibrated client's targets are lifecycle-managed by qbutler, not by
+    # ndscan's tree walk: at most one calibration measurement may be set up at
+    # a time (they share physical hardware), so the walk host_setups each node
+    # just before use and host_cleanups it on handover (Calibration._activate).
+    # Detaching keeps ndscan from also running their setup/cleanup and from
+    # collecting their walk-pushed result channels into a scan. Their
+    # parameters stay in the schema (ndscan collects params of detached
+    # fragments), so the dashboard override UI is unaffected. Plain fragments
+    # (e.g. the monitor controller) keep ndscan management.
+    from .client import CalibratedExpFragment
+
+    if isinstance(self, CalibratedExpFragment):
+        self.detach_fragment(getattr(self, name))
+
 
 setattr(Fragment, "setattr_calibration", setattr_calibration)
 
