@@ -492,3 +492,18 @@ async def launch_artiq_master(tmp_path: Path):
 def random():
     rand.seed(0)
     numpy.random.seed(0)
+
+
+@fixture(autouse=True)
+def reset_pause_check_gate():
+    """Clear the scheduler-pause rate limiter around every test.
+
+    The gate is deliberately process-wide (one check per second for a whole
+    DAG walk, not per calibration), so without this a check made by one test
+    would suppress the first check of the next one.
+    """
+    from qbutler.calibration import pause_check_gate
+
+    pause_check_gate.reset()
+    yield
+    pause_check_gate.reset()
