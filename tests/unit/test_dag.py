@@ -5,6 +5,7 @@ from qbutler.dag import _get_graph
 from qbutler.dag import _get_graph_containing_calibration
 from qbutler.dag import add_to_dependency_map
 from qbutler.dag import get_dependencies
+from qbutler.dag import get_union_dependencies
 
 
 class DummyCal:
@@ -185,6 +186,68 @@ def test_get_dependencies_forking(plot_graph):
         or a_deps == [d, b1, c, b2, a]
         or a_deps == [d, c, b1, b2, a]
     )
+
+
+def test_get_dependencies_diamond(plot_graph):
+    # Issue #31: a -> b -> c plus the shortcut a -> c. The BFS-distance sort
+    # put b and c at equal distance from a and (deterministically, from BFS
+    # insertion order) walked b before its own dependency c. Only [c, b, a]
+    # is a valid walk.
+    a = DummyCal("a")
+    b = DummyCal("b")
+    c = DummyCal("c")
+
+    add_to_dependency_map(a, b)
+    add_to_dependency_map(b, c)
+    add_to_dependency_map(a, c)
+
+    plot_graph()
+
+    assert get_dependencies(a) == [c, b, a]
+    assert get_dependencies(a, furthest_first=False) == [a, b, c]
+    assert get_dependencies(b) == [c, b]
+
+
+def test_get_dependencies_deep_shortcut(plot_graph):
+    # A longer shortcut: a -> b -> c -> d plus a -> d. BFS distance made d
+    # (depth 4) look *closer* than c (depth 3), ordering d after c.
+    a = DummyCal("a")
+    b = DummyCal("b")
+    c = DummyCal("c")
+    d = DummyCal("d")
+
+    add_to_dependency_map(a, b)
+    add_to_dependency_map(b, c)
+    add_to_dependency_map(c, d)
+    add_to_dependency_map(a, d)
+
+    plot_graph()
+
+    assert get_dependencies(a) == [d, c, b, a]
+
+
+def test_get_union_dependencies_shared_chain(plot_graph):
+    # Two leaves sharing one chain (the EnsureClockPiTimes shape): the shared
+    # chain must come before both leaves, each exactly once.
+    up = DummyCal("up")
+    down = DummyCal("down")
+    delivery = DummyCal("delivery")
+    coarse = DummyCal("coarse")
+
+    add_to_dependency_map(up, delivery)
+    add_to_dependency_map(down, delivery)
+    add_to_dependency_map(delivery, coarse)
+
+    plot_graph()
+
+    order = get_union_dependencies([up, down])
+    assert len(order) == 4
+    assert order.index(coarse) < order.index(delivery)
+    assert order.index(delivery) < order.index(up)
+    assert order.index(delivery) < order.index(down)
+
+    # Single target reduces to get_dependencies
+    assert get_union_dependencies([up]) == get_dependencies(up)
 
 
 def test_get_type_from_cache():
