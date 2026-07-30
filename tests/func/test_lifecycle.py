@@ -86,9 +86,9 @@ def test_each_check_runs_on_its_own_setup(fragment_factory):
 
     result, _ = top.check_state(force=True)
 
-    assert result == CalibrationResult.OK, (
-        "a node measured on hardware another node's host_setup had configured"
-    )
+    assert (
+        result == CalibrationResult.OK
+    ), "a node measured on hardware another node's host_setup had configured"
 
 
 def test_handover_orders_cleanup_before_setup(fragment_factory):
