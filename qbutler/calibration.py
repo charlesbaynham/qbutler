@@ -38,6 +38,47 @@ STATUS_DATASET = "calibrations.status"
 #: the scan happen live (see :meth:`Calibration._publish_optimizer_point`).
 OPTIMIZER_DATASET = "calibrations.optimizer"
 
+#: Minimum wall-clock interval, in seconds, between ``scheduler.check_pause()``
+#: calls made while a calibration is being fixed. Each check is a round trip to
+#: the ARTIQ master, so a calibration whose shots take microseconds must not
+#: make one per shot; in between checks the answer is taken to be "no pause".
+PAUSE_CHECK_INTERVAL = 1.0
+
+
+class _PauseCheckGate:
+    """Wall-clock gate in front of every ``scheduler.check_pause()`` qbutler makes.
+
+    One gate for the process rather than one per calibration, so the
+    once-a-second budget covers the DAG walk as a whole: a fix touching twenty
+    nodes must not ask the master twenty times a second.
+    """
+
+    def __init__(self):
+        self._last_check = None
+
+    def due(self) -> bool:
+        """True if enough time has passed to ask the scheduler again.
+
+        Consumes the budget: two calls in quick succession return True, then
+        False.
+        """
+        now = time()
+        if (
+            self._last_check is not None
+            and now - self._last_check < PAUSE_CHECK_INTERVAL
+        ):
+            return False
+        self._last_check = now
+        return True
+
+    def reset(self) -> None:
+        """Forget the last check, so the next one happens immediately."""
+        self._last_check = None
+
+
+#: The process-wide gate (see :class:`_PauseCheckGate`).
+pause_check_gate = _PauseCheckGate()
+
 
 class CalibrationError(RuntimeError):
     pass
@@ -83,6 +124,8 @@ def fix_targets(targets, force=False) -> None:
 
     Raises:
         CalibrationError: if a node will not come good after a fix.
+        TerminationRequested: if the run is terminated while the walk pauses
+            between nodes (see :meth:`Calibration._pause_if_requested`).
     """
     targets = list(targets)
     if not targets:
@@ -91,6 +134,7 @@ def fix_targets(targets, force=False) -> None:
         dag.publish_dag(target)
 
     for dep in dag.get_union_dependencies(targets):
+        dep._pause_if_requested()
         current_state = dep._guess_own_state()
         if current_state & CalibrationResult.BAD_EXPIRED and not force:
             current_state, _ = dep._do_check_own_state()
@@ -240,6 +284,20 @@ class Calibration(ExpFragment):
         self.__most_recent_check_result = None
         self.__most_recent_check_data = None
         self.__optimization_type = "max"
+
+        # Resolved once, here, rather than per shot: the scheduler is a virtual
+        # device, but the fix loops consult it in their innermost loop. None
+        # where there is no scheduler at all (a bare unit test), in which case
+        # pause checking is simply skipped.
+        try:
+            self._scheduler = self.get_device("scheduler")
+        except Exception:
+            logger.debug(
+                "No scheduler device available: %s cannot be paused mid-fix",
+                self.__class__.__name__,
+                exc_info=True,
+            )
+            self._scheduler = None
 
         # Set by seed_precompile_pool when a client arms a PrecompilePool; while
         # None the walk measures / fixes directly (plain host-mode qbutler).
@@ -577,6 +635,10 @@ class Calibration(ExpFragment):
                 passed, this is the bitwise combination of all
                 results; otherwise it is the first bad result,
                 or OK.
+
+        Raises:
+            TerminationRequested: if the run is terminated while the walk
+                pauses between nodes (see :meth:`_pause_if_requested`).
         """
         dag.publish_dag(self)
 
@@ -585,6 +647,7 @@ class Calibration(ExpFragment):
         deps = dag.get_dependencies(self)
         logger.debug(f"Fixing all dependencies of {self.__class__.__name__}")
         for dep in deps:
+            dep._pause_if_requested()
             current_state = dep._guess_own_state()
             logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
 
@@ -695,6 +758,71 @@ class Calibration(ExpFragment):
             pool.get(fix_own_key)()
         else:
             self.fix_own_state()
+
+    def _pause_if_requested(self) -> None:
+        """Yield to the ARTIQ scheduler between shots, if it wants us to.
+
+        Without this a calibration walk is uninterruptible: the DAG is fixed
+        node by node with no return to the scheduler, so a user asking to
+        terminate the run waits until every calibration has finished. Called
+        between nodes of a fix walk and between the shots of a fix, so a
+        request is honoured within roughly one measurement.
+
+        Call from the **host** only, never from inside a kernel:
+        ``scheduler.pause()`` hands the core device to the run we are yielding
+        to, so our kernel must have returned first — which is exactly why the
+        resident optimizer loop bails out to the host instead of pausing in
+        place (see :meth:`_kopt_next_point`).
+
+        Cheap enough for a tight loop: the scheduler is asked at most once
+        every :data:`PAUSE_CHECK_INTERVAL` seconds, so a calibration whose
+        shots take microseconds is not slowed down by round trips to the
+        master.
+
+        Fixes only. Checks are also driven from :mod:`qbutler.monitoring`, one
+        thread per monitor, and pausing off the main thread is not safe; the
+        monitor controller watches for termination itself.
+
+        Raises:
+            TerminationRequested: if the run is being terminated rather than
+                merely preempted. Letting it propagate is the point — it is how
+                a calibration walk stops when the user asks it to.
+        """
+        if self._scheduler_wants_pause():
+            self._pause_now()
+
+    def _scheduler_wants_pause(self) -> bool:
+        """Rate-limited ``scheduler.check_pause()``: True if pausing now would
+        do something (termination requested, or a higher-priority run waiting).
+
+        Never raises — a scheduler hiccup must not break a calibration — and
+        returns False both when there is no scheduler and when the gate says we
+        asked too recently.
+        """
+        scheduler = getattr(self, "_scheduler", None)
+        if scheduler is None or not pause_check_gate.due():
+            return False
+        try:
+            return bool(scheduler.check_pause())
+        except Exception:
+            logger.warning("Could not check for a scheduler pause", exc_info=True)
+            return False
+
+    def _pause_now(self) -> None:
+        """Hand back the core device and pause until the scheduler resumes us."""
+        logger.info(
+            "Pausing calibration of %s at the scheduler's request",
+            self.__class__.__name__,
+        )
+        core = getattr(self, "core", None)
+        if core is not None:
+            # Release the core device so the run we are yielding to can use it;
+            # the next kernel call re-opens the connection and re-uploads.
+            try:
+                core.close()
+            except Exception:
+                logger.debug("Could not close the core device", exc_info=True)
+        self._scheduler.pause()
 
     def _record_own_check(self, result: CalibrationResult, data) -> None:
         """Record + publish a check outcome, whether measured on the host or
@@ -891,7 +1019,7 @@ class Calibration(ExpFragment):
             # never re-override the params here (that would orphan the stores
             # the compiled kernel holds).
             self._kopt_prime(optimizer_func)
-            pool.get(self._precompile_fix_key)()
+            self._drive_optimizer_kernel_loop(pool.get(self._precompile_fix_key))
             self._kopt_commit()
             return
 
@@ -923,6 +1051,8 @@ class Calibration(ExpFragment):
                 param_dict = None
 
             while param_dict is not None:
+                self._pause_if_requested()
+
                 for name, value in param_dict.items():
                     stores[name].set_value(value)
 
@@ -996,10 +1126,39 @@ class Calibration(ExpFragment):
         self._kopt_stores = [stores[spec.name] for spec in param_specs]
         self._kopt_prime(optimizer_func)
         try:
-            self._optimizer_kernel_loop()
+            self._drive_optimizer_kernel_loop(self._optimizer_kernel_loop)
             self._kopt_commit()
         finally:
             self._kopt_cleanup()
+
+    def _drive_optimizer_kernel_loop(self, run_loop: Callable[[], None]) -> None:
+        """Run the resident optimizer loop, pausing between shots when asked.
+
+        A kernel cannot pause itself — ``scheduler.pause()`` has to hand the
+        core device over, so no kernel may be running — so instead the resident
+        loop returns early when a between-shots check finds a pause pending
+        (:meth:`_kopt_next_point`). We then pause here, with the core free, and
+        re-enter: the loop resumes at the point it had not yet measured
+        (:meth:`_kopt_entry_point`). A pause therefore costs one kernel
+        re-upload and repeats no measurements.
+
+        The loop always measures at least one point before it can bail out
+        again, so the sweep still finishes even if the scheduler asks for a
+        pause every single time.
+
+        Args:
+            run_loop: zero-arg callable running :meth:`_optimizer_kernel_loop`,
+                either directly or as its precompiled artifact.
+
+        Raises:
+            TerminationRequested: if the run is terminated rather than
+                preempted.
+        """
+        while True:
+            run_loop()
+            if not self._kopt_pause_pending:
+                return
+            self._pause_now()
 
     def _kopt_prime(self, optimizer_func) -> None:
         """Prime the host side of the resident kernel loop.
@@ -1013,6 +1172,7 @@ class Calibration(ExpFragment):
         self._kopt_best_values = None
         self._kopt_best_data = None
         self._kopt_verify_result = None
+        self._kopt_pause_pending = False
         self._reset_optimizer_trace([spec.name for spec in self._kopt_specs])
 
     def _kopt_prime_default(self) -> None:
@@ -1053,6 +1213,7 @@ class Calibration(ExpFragment):
             "_kopt_best_values",
             "_kopt_best_data",
             "_kopt_verify_result",
+            "_kopt_pause_pending",
         ):
             if hasattr(self, attr):
                 delattr(self, attr)
@@ -1083,8 +1244,20 @@ class Calibration(ExpFragment):
         return self.check_own_state()
 
     @rpc
-    def _kopt_first_point(self) -> TList(TFloat):
-        """RPC: the optimizer's first point, or [] if it has none."""
+    def _kopt_entry_point(self) -> TList(TFloat):
+        """RPC: the point the resident loop should measure first.
+
+        Normally the optimizer's first point; after a scheduler pause, the
+        point the loop bailed out on before measuring it, so that a pause
+        neither skips a point nor measures one twice.
+        """
+        if self._kopt_pause_pending:
+            self._kopt_pause_pending = False
+            return list(self._kopt_current_values)
+        return self._kopt_first_point()
+
+    def _kopt_first_point(self) -> list:
+        """The optimizer's first point, or [] if it has none."""
         try:
             param_dict = next(self._kopt_generator)
         except StopIteration as e:
@@ -1095,7 +1268,15 @@ class Calibration(ExpFragment):
     @rpc
     def _kopt_next_point(self, result, data) -> TList(TFloat):
         """RPC: record the point just measured, advance the host optimizer
-        and return the next point ([] = sweep finished)."""
+        and return the next point ([] = stop looping).
+
+        This is also where the scheduler is consulted, once per shot but
+        rate-limited (:meth:`_scheduler_wants_pause`) — the loop runs on the
+        core device with no other opportunity to yield. A pending pause stops
+        the loop the same way a finished sweep does, by returning []; the host
+        tells the two apart by ``_kopt_pause_pending`` and re-enters the loop
+        after pausing.
+        """
         result = CalibrationResult(int(result))
         logger.debug(
             "Optimizer point %s: result=%s, data=%s",
@@ -1114,7 +1295,14 @@ class Calibration(ExpFragment):
         except StopIteration as e:
             self._kopt_generator_returned(e)
             return []
-        return self._kopt_set_current(param_dict)
+        values = self._kopt_set_current(param_dict)
+
+        if self._scheduler_wants_pause():
+            # Stop the kernel so the host can pause with the core device free.
+            # `values` stays in _kopt_current_values as the point to resume on.
+            self._kopt_pause_pending = True
+            return []
+        return values
 
     def _kopt_set_current(self, param_dict) -> list:
         self._kopt_current_values = [
@@ -1132,8 +1320,13 @@ class Calibration(ExpFragment):
 
     @rpc
     def _kopt_get_best(self) -> TList(TFloat):
-        """RPC: the best values found, [] if none (verification is skipped)."""
-        if self._kopt_best_values is None:
+        """RPC: the best values found, [] if none (verification is skipped).
+
+        Also [] when the loop is unwinding for a scheduler pause: the sweep is
+        not finished, so there is nothing to verify yet — the loop is re-entered
+        after the pause and verifies then.
+        """
+        if self._kopt_pause_pending or self._kopt_best_values is None:
             return []
         return list(self._kopt_best_values)
 
@@ -1148,8 +1341,9 @@ class Calibration(ExpFragment):
     def _optimizer_kernel_loop(self):
         """Resident kernel loop: pull points from the host, apply them
         device-side, measure, report back; verify the best point before
-        returning. One kernel call per fix."""
-        values = self._kopt_first_point()
+        returning. One kernel call per fix, plus one more per scheduler pause
+        (:meth:`_drive_optimizer_kernel_loop`)."""
+        values = self._kopt_entry_point()
         while len(values) > 0:
             for i in range(len(self._kopt_stores)):
                 self._kopt_stores[i].set_value(values[i])

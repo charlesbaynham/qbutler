@@ -59,6 +59,12 @@ Custom optimizers are generators: yield `{param_name: value}` dicts, receive `(C
 
 Optimisable parameters auto-persist to ARTIQ datasets under the key `CalibrationName.param_name`.
 
+### Pausing and termination
+
+A fix walk yields to the ARTIQ scheduler between the shots of a recalibration, so a run can be preempted or terminated without waiting for the whole DAG to finish. `scheduler.check_pause()` is rate-limited by a process-wide gate (`PAUSE_CHECK_INTERVAL`, default 1 s) so fast calibrations don't pay for a round trip to the master per shot.
+
+A kernel cannot pause itself — `scheduler.pause()` has to hand the core device over — so the resident optimizer kernel loop returns to the host when a pause is pending, the host pauses, and the loop is re-entered where it left off (`_drive_optimizer_kernel_loop`). Checks are *not* paused: `MonitorController` runs them on worker threads.
+
 ### Timeout behaviour
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.

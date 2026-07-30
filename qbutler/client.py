@@ -217,6 +217,12 @@ class CalibratedExpFragment(ExpFragment):
         :class:`~qbutler.calibration.CalibrationEscape`; it walks the union so a
         shared dependency is fixed once. A forced escape (see
         :meth:`recalibrate_if_needed`) re-optimizes every node unconditionally.
+
+        The walk yields to the scheduler between the shots of a fix (see
+        :meth:`~qbutler.calibration.Calibration._pause_if_requested`), so a
+        recalibration can be preempted or terminated rather than having to run
+        to completion; a termination raises ``TerminationRequested`` through
+        here, which the wrapper suppresses to end the experiment cleanly.
         """
         force = self._force_fix_pending
         self._force_fix_pending = False
