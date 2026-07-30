@@ -113,3 +113,44 @@ def test_can_rename_calibrations(fragment_factory):
     assert hasattr(c, "dep1")
     assert hasattr(c, "dep2")
     assert not hasattr(c, "BadCalibration")
+
+
+class SharedDependency(Calibration):
+    def build_calibration(self):
+        pass
+
+    def check_own_state(self):
+        return CalibrationResult.OK, None
+
+
+class MiddleCal(Calibration):
+    def build_calibration(self):
+        self.add_dependency(SharedDependency)
+
+    def check_own_state(self):
+        return CalibrationResult.OK, None
+
+
+class DiamondTop(Calibration):
+    def build_calibration(self):
+        # SharedDependency is created here...
+        self.add_dependency(SharedDependency)
+        # ...so MiddleCal's own add_dependency(SharedDependency) hits the
+        # dedup path. The edge must still be recorded (issue #31).
+        self.add_dependency(MiddleCal)
+
+    def check_own_state(self):
+        return CalibrationResult.OK, None
+
+
+def test_deduplicated_dependency_edge_is_recorded(fragment_factory):
+    from qbutler import dag
+
+    top = fragment_factory(DiamondTop)
+
+    deps = dag.get_dependencies(top)
+    assert [type(d).__name__ for d in deps] == [
+        "SharedDependency",
+        "MiddleCal",
+        "DiamondTop",
+    ]

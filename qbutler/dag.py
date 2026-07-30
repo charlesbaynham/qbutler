@@ -91,32 +91,50 @@ def add_to_dependency_map(cal_object, dependent_cal_object):
     _dag_valid = False
 
 
+def _reachable_refs(G, obj) -> set:
+    """The weakrefs reachable from ``obj`` along dependency edges (self
+    included). Raises KeyError if ``obj`` is not in the graph."""
+    src = weakref.ref(obj)
+    if src not in G:
+        raise KeyError(f"Calibration {obj} not found in DAG")
+    return nx.descendants(G, src) | {src}
+
+
+def _topo_order(G, refs, furthest_first) -> List["Calibration"]:
+    """Order ``refs`` (weakref nodes of ``G``) topologically.
+
+    Edges point parent -> dependency, so a topological sort yields parents
+    before the things they depend on; ``furthest_first`` reverses it so the
+    deepest dependency comes first — a *correct* walk order for any DAG,
+    unlike the BFS-distance sort this replaces, which could place a node
+    before its own dependency whenever a "shortcut" edge made the dependency's
+    shortest path no longer than its dependent's (e.g. a -> b -> c plus
+    a -> c).
+    """
+    order = list(nx.topological_sort(G.subgraph(refs)))
+    if furthest_first:
+        order.reverse()
+    return [r() for r in order]
+
+
 def get_dependencies(obj, furthest_first=True) -> List["Calibration"]:
     """
-    Return a list of a Calibration's dependent objects, including the calibration itself
+    Return a list of a Calibration's dependent objects, including the
+    calibration itself, in dependency (topological) order: with
+    ``furthest_first`` every node appears after all of its dependencies.
     """
-    # Get a dict of lengths of paths to all dependencies
-    G = _get_graph_containing_calibration(obj)
-    paths = nx.single_source_shortest_path(G, weakref.ref(obj))
-
-    # Convert to a list of tuples of (target, distance) with the furthest ones first
-    targets_and_distances = [(t, len(p)) for t, p in paths.items()]
-    targets_and_distances = sorted(
-        targets_and_distances, key=lambda d: d[1], reverse=furthest_first
-    )
-
-    # Dereference the weakrefs and return
-    return [t() for t, _ in targets_and_distances]
+    G = _get_graph()
+    return _topo_order(G, _reachable_refs(G, obj), furthest_first)
 
 
 def get_union_dependencies(targets, furthest_first=True) -> List:
     """Merge several targets' dependency lists into one walk order.
 
-    Every node in the union of the targets' DAGs appears exactly once. A node is
-    ordered by its *greatest* distance from any target, so a dependency shared by
-    several targets is placed ahead of every node that depends on it — walking
-    this order fixes a shared node once, before its dependents. With a single
-    target this reduces to :func:`get_dependencies`.
+    Every node in the union of the targets' DAGs appears exactly once, in
+    topological order, so a dependency shared by several targets is placed
+    ahead of every node that depends on it — walking this order fixes a shared
+    node once, before its dependents. With a single target this reduces to
+    :func:`get_dependencies`.
 
     Args:
         targets: an iterable of :class:`~qbutler.calibration.Calibration`
@@ -125,19 +143,11 @@ def get_union_dependencies(targets, furthest_first=True) -> List:
     Returns:
         List: the deduplicated calibration objects, furthest dependency first.
     """
-    max_distance = {}
+    G = _get_graph()
+    refs = set()
     for target in targets:
-        G = _get_graph_containing_calibration(target)
-        paths = nx.single_source_shortest_path(G, weakref.ref(target))
-        for ref, path in paths.items():
-            distance = len(path)
-            if ref not in max_distance or distance > max_distance[ref]:
-                max_distance[ref] = distance
-
-    ordered = sorted(
-        max_distance.items(), key=lambda item: item[1], reverse=furthest_first
-    )
-    return [ref() for ref, _ in ordered]
+        refs |= _reachable_refs(G, target)
+    return _topo_order(G, refs, furthest_first)
 
 
 def get_calibrations_of_type(obj_type: Type["Calibration"]) -> List["Calibration"]:

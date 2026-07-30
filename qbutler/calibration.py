@@ -440,7 +440,13 @@ class Calibration(ExpFragment):
                     dep_calibration_class,
                     cals_from_cache[0],
                 )
-            setattr(self, name, cals_from_cache[0])
+            dep_calibration_object = cals_from_cache[0]
+            setattr(self, name, dep_calibration_object)
+            # The dependency edge must be recorded even though the node is
+            # shared: dropping it left the dependent disconnected from (part
+            # of) its chain, so walks could order it before its own
+            # dependencies (issue #31).
+            dag.add_to_dependency_map(self, dep_calibration_object)
 
     def _get_dependencies(self):
         return dag.get_dependencies(self)
