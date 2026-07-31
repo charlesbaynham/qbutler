@@ -2,7 +2,9 @@
 
 ## Reference repositories
 
-The Nix-pinned dependencies (`artiq`, `ndscan`, `oitg`) are shallow-cloned at session start into `.claude/deps/<name>/` at the exact revs from `flake.lock`, by `.claude/clone-deps.sh` (run via the SessionStart hook configured in `.claude/settings.json`). The clone is idempotent — it compares `HEAD` against the target rev and skips if already current. `jq` is required.
+The Nix-pinned dependencies (`artiq`, `ndscan`, `oitg`) are shallow-cloned at session start into `.claude/deps/<name>/` at the exact revs from `flake.lock`. This is done by the `claude-code-vendored-refs` plugin, which reads `.claude/vendored-refs.yaml`; add a repo there to have it mirrored too. The clone is idempotent — it compares `HEAD` against the target rev and skips if already current. PyYAML is required.
+
+Do not edit anything under `.claude/deps/` — it is reference material only, and changes are lost on the next clone.
 
 `icl_experiments` is qbutler's only current downstream user and the best reference for how qbutler is used in practice. It isn't pinned in `flake.lock`, so clone it manually if you need it:
 

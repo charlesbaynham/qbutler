@@ -1,0 +1,11 @@
+# Reference checkouts of qbutler's core dependencies, cloned on session start by
+# the claude-code-vendored-refs plugin. Revisions track flake.lock, so these are
+# always the sources the Nix dev shell actually builds against.
+repos:
+- name: artiq
+  source: nix
+- name: ndscan
+  source: nix
+- name: oitg
+  source: nix
+destination: .claude/deps
