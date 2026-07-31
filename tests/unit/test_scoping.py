@@ -70,13 +70,15 @@ def test_scoped_key_sanitises_the_pipeline_name():
 
 
 def test_scoped_key_unchanged_without_a_pipeline():
-    assert scoping.scoped_key("calibrations.dag", NoSchedulerEnv()) == "calibrations.dag"
+    assert (
+        scoping.scoped_key("calibrations.dag", NoSchedulerEnv()) == "calibrations.dag"
+    )
 
 
 def test_different_pipelines_get_different_keys():
-    assert scoping.scoped_key("calibrations.dag", FakeEnv("main")) != scoping.scoped_key(
-        "calibrations.dag", FakeEnv("monitors")
-    )
+    assert scoping.scoped_key(
+        "calibrations.dag", FakeEnv("main")
+    ) != scoping.scoped_key("calibrations.dag", FakeEnv("monitors"))
 
 
 def test_applet_group_inserts_the_pipeline_level():
