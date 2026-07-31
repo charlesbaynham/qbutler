@@ -23,6 +23,7 @@ from ndscan.experiment.utils import is_kernel
 from . import ccb
 from . import dag
 from . import patch_ndscan  # noqa
+from . import scoping
 from .optimizers import ParamSpec
 from .optimizers import grid_search_optimizer
 
@@ -31,11 +32,21 @@ logger = logging.getLogger(__name__)
 #: Broadcast dataset holding a {class_name: {status, last_check, timeout, data}}
 #: table, published on every check so applets and later worker processes can
 #: see calibration state.
+#:
+#: Deliberately *not* scoped per pipeline, unlike :data:`OPTIMIZER_DATASET` and
+#: :data:`~qbutler.dag.DAG_DATASET`: when a calibration was last checked, and
+#: what it found, is a property of the apparatus rather than of the pipeline
+#: that happened to measure it, and :meth:`Calibration._recall_status` relies on
+#: a walk in one pipeline seeing a check another pipeline already did.
 STATUS_DATASET = "calibrations.status"
 
-#: Broadcast dataset holding a {class_name: {param_names, points, data, status,
-#: started}} table, appended to as an optimizer walks so an applet can watch
-#: the scan happen live (see :meth:`Calibration._publish_optimizer_point`).
+#: Base of the broadcast dataset holding a {class_name: {param_names, points,
+#: data, status, started}} table, appended to as an optimizer walks so an applet
+#: can watch the scan happen live (see
+#: :meth:`Calibration._publish_optimizer_point`). Suffixed with the running
+#: pipeline's name: each point is a read-modify-write of the whole table, so
+#: simultaneous fixes in different pipelines would otherwise drop each other's
+#: points (see :mod:`qbutler.scoping`).
 OPTIMIZER_DATASET = "calibrations.optimizer"
 
 #: Minimum wall-clock interval, in seconds, between ``scheduler.check_pause()``
@@ -873,17 +884,23 @@ class Calibration(ExpFragment):
         except Exception:
             logger.warning("Could not publish calibration status", exc_info=True)
 
+    def _optimizer_dataset_key(self) -> str:
+        """This pipeline's :data:`OPTIMIZER_DATASET` key."""
+        return scoping.scoped_key(OPTIMIZER_DATASET, self)
+
     def _reset_optimizer_trace(self, param_names) -> None:
         """Start a fresh live trace for this optimizer run.
 
         Called at the top of every fix so an applet plots one sweep at a time.
         Also ensures this calibration's own optimizer applet exists, so the
-        sweep is shown in a plot namespaced for this class as soon as it starts.
+        sweep is shown in a plot namespaced for this class (and this pipeline)
+        as soon as it starts.
         Never raises: visualisation must not be able to break a calibration.
         """
         ccb.create_optimizer_applet(self, self.__class__.__name__)
         try:
-            table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+            key = self._optimizer_dataset_key()
+            table = self.get_dataset(key, default={}, archive=False)
             if not isinstance(table, dict):
                 table = {}
             table[self.__class__.__name__] = {
@@ -893,9 +910,7 @@ class Calibration(ExpFragment):
                 "status": [],
                 "started": time(),
             }
-            self.set_dataset(
-                OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
-            )
+            self.set_dataset(key, table, broadcast=True, persist=True, archive=False)
         except Exception:
             logger.warning("Could not reset optimizer trace", exc_info=True)
 
@@ -908,7 +923,8 @@ class Calibration(ExpFragment):
         and neither may be broken by a dataset hiccup.
         """
         try:
-            table = self.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+            key = self._optimizer_dataset_key()
+            table = self.get_dataset(key, default={}, archive=False)
             if not isinstance(table, dict):
                 return
             entry = table.get(self.__class__.__name__)
@@ -919,9 +935,7 @@ class Calibration(ExpFragment):
                 float(data) if isinstance(data, (int, float)) else None
             )
             entry["status"].append(int(result))
-            self.set_dataset(
-                OPTIMIZER_DATASET, table, broadcast=True, persist=True, archive=False
-            )
+            self.set_dataset(key, table, broadcast=True, persist=True, archive=False)
         except Exception:
             logger.warning("Could not publish optimizer point", exc_info=True)
 

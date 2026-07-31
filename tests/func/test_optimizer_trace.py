@@ -7,6 +7,7 @@ resident kernel loop (kernel check_own_state) — and the per-fix reset.
 
 import pytest
 
+from qbutler import scoping
 from qbutler.calibration import OPTIMIZER_DATASET
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
@@ -24,15 +25,17 @@ class TracedCalibration(Calibration):
         return CalibrationResult.OK, 10.0 * self.test.get()
 
 
-def _entry(dataset_db, class_name):
-    return dataset_db.get(OPTIMIZER_DATASET)[class_name]
+def _entry(dataset_db, cal):
+    """``cal``'s trace, from the dataset scoped to the pipeline it ran in."""
+    key = scoping.scoped_key(OPTIMIZER_DATASET, cal)
+    return dataset_db.get(key)[type(cal).__name__]
 
 
 def test_host_loop_traces_every_point(fragment_factory, dataset_db):
     c = fragment_factory(TracedCalibration)
     c.fix_state(force=True)
 
-    entry = _entry(dataset_db, "TracedCalibration")
+    entry = _entry(dataset_db, c)
     assert entry["param_names"] == ["test"]
     assert len(entry["points"]) == NUM_SCAN_POINT
     assert len(entry["data"]) == NUM_SCAN_POINT
@@ -49,7 +52,7 @@ def test_trace_resets_each_fix(fragment_factory, dataset_db):
     c.fix_state(force=True)
 
     # A second fix replaces the trace, it does not append to the first.
-    entry = _entry(dataset_db, "TracedCalibration")
+    entry = _entry(dataset_db, c)
     assert len(entry["points"]) == NUM_SCAN_POINT
 
 
@@ -60,7 +63,7 @@ def test_kernel_loop_traces_every_point(fragment_factory, dataset_db):
     c = fragment_factory(kernel_calibrations.KernelOptimizableCalibration)
     c.fix_own_state()
 
-    entry = _entry(dataset_db, "KernelOptimizableCalibration")
+    entry = _entry(dataset_db, c)
     assert entry["param_names"] == ["param1"]
     assert len(entry["points"]) == NUM_SCAN_POINT
     assert len(entry["data"]) == NUM_SCAN_POINT
@@ -77,6 +80,6 @@ def test_kernel_feedback_loop_traces_every_point(fragment_factory, dataset_db):
     c = fragment_factory(kernel_calibrations.KernelFeedbackOptimizableCalibration)
     c.fix_own_state()
 
-    entry = _entry(dataset_db, "KernelFeedbackOptimizableCalibration")
+    entry = _entry(dataset_db, c)
     assert len(entry["points"]) > 0
     assert len(entry["points"]) == len(entry["data"]) == len(entry["status"])
