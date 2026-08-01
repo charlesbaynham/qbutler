@@ -101,6 +101,12 @@ A fix walk fixes a node and re-checks it; if the re-check is still not OK — or
 
 Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc. is a bug in the calibration and propagates immediately. The loop yields to the scheduler between attempts, so a run stuck on a hopeless calibration can still be terminated.
 
+### Repeating a shot: transitory errors only
+
+Distinct from fix retries, which re-*fix* a node: a single measurement that raises an ndscan `TransitoryError` is simply taken again, up to `max_transitory_error_retries` (default 10). That covers both measurement sites — the resident kernel loop (`_measure_with_transitory_retries`, used for the sweep points and the final verification) and the host-side `_do_check_own_state`. A transitory error means the apparatus is fine and this particular shot needs taking again, so repeating it costs only time.
+
+**`RTIOUnderflow` is deliberately not repeated**, unlike in ndscan's scan runners, which repeat any underflow. An underflow is a real timing failure and must surface; only the fragment that raised it can judge it benign, and the way to say so is to convert it to a `TransitoryError` there. (`icl_experiments` does this for one specific case: an Andor readout that overruns the fixed inter-series timeline budget and underflows the background-image trigger.) `RestartKernelTransitoryError` is not repeated either — nothing inside a resident kernel loop can restart the kernel — so it propagates to the client.
+
 ### SUSPECT: distrusting in-timeout OKs
 
 When a node's fix attempt fails, the real culprit is often a dependency that still *looks* good — checked recently, inside its timeout — but has silently drifted. Each such dependency is marked **suspect**: the dependent's class name is added to its `suspected_by` set (persisted in `calibrations.status`, restored by `_recall_status`). SUSPECT is deliberately **not** a `CalibrationResult` member — a check can't *measure* "suspect"; it is trust metadata, and `check_own_state` can never return it.
