@@ -291,3 +291,93 @@ def test_get_calibrataions_from_cache(fragment_factory):
     assert len(cals) == 2
     assert c1 in cals
     assert c2 in cals
+
+
+def _count_sweeps(monkeypatch):
+    """Count whole-heap sweeps, still performing them."""
+    sweeps = []
+    real_collect = dag.gc.collect
+
+    def counting_collect(*args, **kwargs):
+        sweeps.append(1)
+        return real_collect(*args, **kwargs)
+
+    monkeypatch.setattr(dag.gc, "collect", counting_collect)
+    return sweeps
+
+
+def test_building_sweeps_the_heap_once_per_tree(monkeypatch):
+    class _Cal(DummyCal):
+        pass
+
+    sweeps = _count_sweeps(monkeypatch)
+
+    # Uninstrumented callers sweep on every lookup, exactly as before
+    dag.get_calibrations_of_type(_Cal)
+    dag.get_calibrations_of_type(_Cal)
+    assert len(sweeps) == 2
+
+    # Inside one build scope, the first lookup sweeps and the rest ride on it
+    sweeps.clear()
+    with dag.building():
+        for _ in range(5):
+            dag.get_calibrations_of_type(_Cal)
+    assert len(sweeps) == 1
+
+    # The next tree gets its own sweep: the previous one's corpses are new
+    sweeps.clear()
+    with dag.building():
+        dag.get_calibrations_of_type(_Cal)
+    assert len(sweeps) == 1
+
+
+def test_nested_building_scopes_sweep_once(monkeypatch):
+    class _Cal(DummyCal):
+        pass
+
+    sweeps = _count_sweeps(monkeypatch)
+
+    with dag.building():
+        dag.get_calibrations_of_type(_Cal)
+        with dag.building():
+            dag.get_calibrations_of_type(_Cal)
+        dag.get_calibrations_of_type(_Cal)
+
+    assert len(sweeps) == 1
+    assert dag._build_depth == 0
+
+
+def test_a_previous_builds_corpse_is_purged_when_the_next_starts():
+    """The load-bearing property: the sweep must survive the throttle.
+
+    A Calibration in a reference cycle outlives its build until the collector
+    runs. If the next build could still see it, add_dependency would alias the
+    corpse instead of building the subtree, and its parameters would silently
+    vanish from the experiment's arginfo.
+    """
+
+    class _Cal(DummyCal):
+        pass
+
+    a = _Cal("a")
+    a.cycle = a  # only the collector can free this
+    dag.add_to_dependency_map(a, None)
+    del a
+
+    with dag.building():
+        assert dag.get_calibrations_of_type(_Cal) == []
+
+
+def test_live_calibrations_are_still_found_within_a_build():
+    """Skipping the later sweeps must not break intra-build dedup."""
+
+    class _Cal(DummyCal):
+        pass
+
+    with dag.building():
+        dag.get_calibrations_of_type(_Cal)  # the build's one sweep
+
+        a = _Cal("a")
+        dag.add_to_dependency_map(a, None)
+
+        assert dag.get_calibrations_of_type(_Cal) == [a]

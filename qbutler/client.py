@@ -472,11 +472,15 @@ def make_calibrated_experiment(
             # de-aliases the dataset broadcaster, which captured its parent
             # action at worker startup and so escapes the class-level wrap.
             install_worker_ipc_lock(self)
-            super().build(
-                lambda: fragment_class(self, [], *args),
-                max_rtio_underflow_retries=max_rtio_underflow_retries,
-                max_transitory_error_retries=max_transitory_error_retries,
-            )
+            # One whole-heap sweep for the whole tree, not one per
+            # add_dependency: the master's build deadline is 15 s and the
+            # sweep's cost grows with the heap (see dag.building).
+            with dag.building():
+                super().build(
+                    lambda: fragment_class(self, [], *args),
+                    max_rtio_underflow_retries=max_rtio_underflow_retries,
+                    max_transitory_error_retries=max_transitory_error_retries,
+                )
 
         def prepare(self):
             super().prepare()

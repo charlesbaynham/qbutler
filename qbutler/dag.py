@@ -1,6 +1,7 @@
 import gc
 import logging
 import weakref
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 from typing import List
 from typing import Type
@@ -57,6 +58,45 @@ _dependency_map = []
 
 _dag = None
 _dag_valid = False
+
+#: Depth of nested :func:`building` scopes, and whether the current outermost
+#: one has already swept the heap. See :func:`building`.
+_build_depth = 0
+_swept_this_build = False
+
+
+@contextmanager
+def building():
+    """Mark the construction of one calibration tree, so it sweeps the heap once.
+
+    :func:`_filter_dependency_map` drops map entries whose Calibration has been
+    garbage-collected, and has to ``gc.collect()`` first because Calibrations
+    die in reference cycles: until the collector runs, a *previous* build's
+    corpse still answers its weakref and ``add_dependency`` aliases it instead
+    of building a fresh subtree. That collect is a whole-heap pass whose cost
+    grows with the heap, and ``add_dependency`` triggers one each, so a tree
+    with a handful of dependencies pays for several.
+
+    Nothing dies *during* a build - every Calibration under construction is
+    reachable from the tree - so one sweep on entry is as good as one per
+    dependency. Wrapping the top-level construction in this scope collapses
+    them, which is what keeps a large tree inside the ARTIQ master's 15 s
+    build deadline (``Worker.build``, ``artiq/master/worker.py``).
+
+    Outside any such scope every call sweeps, exactly as before: an
+    un-instrumented caller loses the speed-up, never the correctness.
+    """
+    global _build_depth, _swept_this_build
+
+    if _build_depth == 0:
+        _swept_this_build = False
+    _build_depth += 1
+    try:
+        yield
+    finally:
+        _build_depth -= 1
+        if _build_depth == 0:
+            _swept_this_build = False
 
 
 def add_to_dependency_map(cal_object, dependent_cal_object):
@@ -216,7 +256,7 @@ def _filter_dependency_map():
     Clear out any weakrefs from the _dependency_map which have gone bad due to
     object deletion and garbage collection
     """
-    global _dag, _dag_valid, _dependency_map
+    global _dag, _dag_valid, _dependency_map, _swept_this_build
 
     def both_refs_valid(refs):
         ref_1, ref_2 = refs
@@ -226,7 +266,11 @@ def _filter_dependency_map():
             or ref_2() is not None  # The second weakref.ref exists and is valid
         )
 
-    gc.collect()
+    # Inside a build() scope one sweep serves the whole tree; see building().
+    if not (_build_depth > 0 and _swept_this_build):
+        gc.collect()
+        _swept_this_build = _build_depth > 0
+
     filtered_dependency_map = list(filter(both_refs_valid, _dependency_map))
 
     if len(_dependency_map) != len(filtered_dependency_map):
