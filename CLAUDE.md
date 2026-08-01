@@ -67,6 +67,12 @@ A fix walk yields to the ARTIQ scheduler between the shots of a recalibration, s
 
 A kernel cannot pause itself — `scheduler.pause()` has to hand the core device over — so the resident optimizer kernel loop returns to the host when a pause is pending, the host pauses, and the loop is re-entered where it left off (`_drive_optimizer_kernel_loop`). Checks are *not* paused: `MonitorController` runs them on worker threads.
 
+### Fix retries
+
+A fix walk fixes a node and re-checks it; if the re-check is still not OK — or the fix gave up with a `CalibrationError`, e.g. an optimizer that found no valid point — **the node is simply fixed again, indefinitely by default** (`Calibration._fix_own_state_until_ok`). Crashing the experiment is opt-in: `set_max_fix_attempts(n)` bounds one calibration, `calibration.DEFAULT_MAX_FIX_ATTEMPTS` bounds the whole process (`= 1` restores the old fail-fast behaviour). The budget is read at fix time, not build time.
+
+Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc. is a bug in the calibration and propagates immediately. The loop yields to the scheduler between attempts, so a run stuck on a hopeless calibration can still be terminated.
+
 ### Timeout behaviour
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
