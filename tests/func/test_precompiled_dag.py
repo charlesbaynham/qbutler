@@ -31,17 +31,22 @@ def _arm_nodes(cal):
 
 
 @pytest.mark.withartiq
-def test_pool_seeds_and_compiles_whole_dag(fragment_factory):
+def test_pool_compiles_lazily_on_activation(fragment_factory):
     top = fragment_factory(kernel_calibrations.DagTopCalibration)
-    _arm_nodes(top)
 
     pool = PrecompilePool(top.core)
-    top.seed_precompile_pool(pool)
-    pool.drain()
+    top.attach_precompile_pool(pool)
 
     nodes = dag.get_dependencies(top)
     assert len(nodes) == 3  # Base <- Mid <- Top
+
+    # Attaching alone compiles nothing: kernels embed attributes host_setup
+    # creates, so compilation waits for each node's first activation.
     for node in nodes:
+        assert node._precompile_check_key is None
+
+    for node in nodes:
+        node._activate()
         # every node has a @kernel check and a default-optimizer fix
         assert callable(pool.get(node._precompile_check_key))
         assert callable(pool.get(node._precompile_fix_key))
@@ -66,10 +71,10 @@ def test_precompiled_kernels_have_no_subkernels(fragment_factory):
 @pytest.mark.withartiq
 def test_pooled_fix_walk_optimises_dag(fragment_factory):
     top = fragment_factory(kernel_calibrations.DagTopCalibration)
-    _arm_nodes(top)
 
     pool = PrecompilePool(top.core)
-    top.seed_precompile_pool(pool)
+    top.attach_precompile_pool(pool)
+    # No arming: the walk host_setups each node itself, at activation.
 
     # Broken at defaults; a fix walk (driven by pooled kernels) fixes all levels.
     assert top.check_state(force=True)[0] != CalibrationResult.OK

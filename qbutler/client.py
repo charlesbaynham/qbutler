@@ -55,6 +55,7 @@ from .calibration import Calibration
 from .calibration import CalibrationError
 from .calibration import CalibrationEscape
 from .calibration import CalibrationResult
+from .calibration import deactivate_active_calibration
 from .calibration import fix_targets
 from .precompile import PrecompilePool
 from .worker_ipc_lock import install_worker_ipc_lock
@@ -118,6 +119,23 @@ class CalibratedExpFragment(ExpFragment):
     calibration detour may have changed exactly what those persisted variables
     assume, so persisted-state initialisation must re-run after it.
 
+    **Lifecycle contract.** The calibrations a client declares (via
+    ``setattr_calibration``, directly on the client fragment) are lifecycle-
+    managed by qbutler, not by ndscan's tree walk: they are detached at
+    declaration, and the calibration walk ``host_setup``\\ s each node
+    immediately before its measurement runs and ``host_cleanup``\\ s it before
+    the next node's setup (:meth:`~qbutler.calibration.Calibration._activate`)
+    — at most one calibration measurement is set up at any moment, because
+    measurements share physical hardware. ndscan keeps sole ownership of the
+    *main* fragment tree: its escape/re-entry brackets (``host_setup`` before
+    ``acquire``/the continuous loop, ``host_cleanup`` in a ``finally``) run
+    around every fix walk, so the science fragment's own setup always holds
+    when the science kernel runs. Consequence for science kernels: read
+    calibration outputs through your own dataset-defaulted parameters (the
+    committed values land in datasets), not by reaching into the calibration
+    subtree — a detached node's params are not refreshed into the main kernel
+    on re-entry.
+
     Class attributes you may override:
         calibration_target: The top :class:`~qbutler.calibration.Calibration` of
             the DAG. Leave ``None`` to auto-discover the single attached
@@ -159,6 +177,10 @@ class CalibratedExpFragment(ExpFragment):
         super().host_cleanup()
 
     def _shutdown_calibration(self):
+        # Belt-and-braces: every walk deactivates on exit, but if the run dies
+        # mid-walk the active node still holds its host_setup — pair it with
+        # its cleanup before the worker goes away.
+        deactivate_active_calibration()
         pool = getattr(self, "_cal_pool", None)
         if pool is not None:
             pool.shutdown()
@@ -196,18 +218,15 @@ class CalibratedExpFragment(ExpFragment):
         targets = self._resolve_targets()
         self._cal_targets = targets
 
-        # Each node needs its own host_setup before its kernel can compile (it
-        # arms the measurement the kernel reads). The targets are attached, so
-        # super().host_setup() already set them up; their dependencies are
-        # detached, so set them up here. Walk the union so a dependency shared by
-        # several targets is set up exactly once.
-        for node in dag.get_union_dependencies(targets):
-            if node not in targets:
-                node.host_setup()
-
+        # Nothing is host_setup here: calibration nodes are set up one at a
+        # time, immediately before use, by the walk itself (the handover in
+        # Calibration._activate) — their measurements share physical hardware,
+        # so their setups must not coexist. Attaching the pool is bookkeeping
+        # only; each node's kernels compile lazily on its first activation
+        # (compilation embeds attributes host_setup creates).
         pool = self._ensure_cal_pool()
         for target in targets:
-            target.seed_precompile_pool(pool)
+            target.attach_precompile_pool(pool)
         self._cal_armed = True
 
     def _recalibrate(self):

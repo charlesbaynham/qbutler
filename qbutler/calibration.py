@@ -1,4 +1,5 @@
 import logging
+import threading
 from enum import Flag
 from enum import auto
 from time import time
@@ -107,6 +108,33 @@ class _PauseCheckGate:
 pause_check_gate = _PauseCheckGate()
 
 
+#: The calibration node whose measurement is currently set up on the hardware
+#: (``host_setup`` run, ``host_cleanup`` pending), or None. One slot for the
+#: whole process: calibration measurements share physical hardware (e.g. one
+#: camera), so at most one may be "active" at a time — see
+#: :meth:`Calibration._activate`.
+_active_node: Optional["Calibration"] = None
+
+#: Guards :data:`_active_node`. Walks run on the main thread, but monitor
+#: checks run on executor threads; the lock keeps the slot coherent anywhere.
+_active_node_lock = threading.RLock()
+
+
+def deactivate_active_calibration() -> None:
+    """``host_cleanup`` the currently-active calibration node, if any.
+
+    Called at the end of every walk (:func:`fix_targets`, :func:`check_targets`,
+    :meth:`Calibration.fix_state`, :meth:`Calibration.check_state`) and at
+    client shutdown, so a walk leaves the hardware the way it found it and the
+    main experiment fragment's next ``host_setup`` starts from a clean slate.
+    """
+    global _active_node
+    with _active_node_lock:
+        node, _active_node = _active_node, None
+        if node is not None:
+            node.host_cleanup()
+
+
 class CalibrationError(RuntimeError):
     pass
 
@@ -163,14 +191,17 @@ def fix_targets(targets, force=False) -> None:
     for target in targets:
         dag.publish_dag(target)
 
-    for dep in dag.get_union_dependencies(targets):
-        dep._pause_if_requested()
-        current_state = dep._guess_own_state()
-        if current_state & CalibrationResult.BAD_EXPIRED and not force:
-            current_state, _ = dep._do_check_own_state()
+    try:
+        for dep in dag.get_union_dependencies(targets):
+            dep._pause_if_requested()
+            current_state = dep._guess_own_state()
+            if current_state & CalibrationResult.BAD_EXPIRED and not force:
+                current_state, _ = dep._do_check_own_state()
 
-        if current_state != CalibrationResult.OK or force:
-            dep._fix_own_state_until_ok()
+            if current_state != CalibrationResult.OK or force:
+                dep._fix_own_state_until_ok()
+    finally:
+        deactivate_active_calibration()
 
 
 def check_targets(
@@ -191,16 +222,19 @@ def check_targets(
     r = CalibrationResult.OK
     data = None
     deps = dag.get_union_dependencies(targets)
-    for dep in deps:
-        current_state = dep._guess_own_state()
-        if force or current_state != CalibrationResult.OK:
-            state, data = dep._do_check_own_state()
-            r |= state
-            if r != CalibrationResult.OK and not continue_on_fail:
-                if dep is deps[-1]:
-                    return r, data
-                return CalibrationResult.BAD_DEPS, None
-    return r, data
+    try:
+        for dep in deps:
+            current_state = dep._guess_own_state()
+            if force or current_state != CalibrationResult.OK:
+                state, data = dep._do_check_own_state()
+                r |= state
+                if r != CalibrationResult.OK and not continue_on_fail:
+                    if dep is deps[-1]:
+                        return r, data
+                    return CalibrationResult.BAD_DEPS, None
+        return r, data
+    finally:
+        deactivate_active_calibration()
 
 
 class Calibration(ExpFragment):
@@ -325,12 +359,17 @@ class Calibration(ExpFragment):
             )
             self._scheduler = None
 
-        # Set by seed_precompile_pool when a client arms a PrecompilePool; while
-        # None the walk measures / fixes directly (plain host-mode qbutler).
+        # Set by attach_precompile_pool when a client arms a PrecompilePool;
+        # while None the walk measures / fixes directly (plain host-mode
+        # qbutler). Kernels compile lazily, on first activation (_activate).
         self._precompile_pool = None
+        self._precompile_seeded = False
         self._precompile_check_key = None
         self._precompile_fix_key = None
         self._precompile_fix_own_key = None
+
+        # True once host_setup has ever run (see _activate)
+        self._lifecycle_setup_ran = False
 
         # Add results channels for measurements of the Calibration's state
         self.setattr_result("status", OpaqueChannel)
@@ -678,18 +717,21 @@ class Calibration(ExpFragment):
         data = None
 
         deps = dag.get_dependencies(self)
-        for dep in deps:
-            current_state = dep._guess_own_state()
-            if force or current_state != CalibrationResult.OK:
-                state, data = dep._do_check_own_state()
-                r |= state
-                if r != CalibrationResult.OK and not continue_on_fail:
-                    if dep == deps[-1]:
-                        return r, data
-                    else:
-                        return CalibrationResult.BAD_DEPS, None
+        try:
+            for dep in deps:
+                current_state = dep._guess_own_state()
+                if force or current_state != CalibrationResult.OK:
+                    state, data = dep._do_check_own_state()
+                    r |= state
+                    if r != CalibrationResult.OK and not continue_on_fail:
+                        if dep == deps[-1]:
+                            return r, data
+                        else:
+                            return CalibrationResult.BAD_DEPS, None
 
-        return r, data
+            return r, data
+        finally:
+            deactivate_active_calibration()
 
     def fix_state(self, force=False):
         """
@@ -732,36 +774,101 @@ class Calibration(ExpFragment):
         # and check their states, ending with this object
         deps = dag.get_dependencies(self)
         logger.debug(f"Fixing all dependencies of {self.__class__.__name__}")
-        for dep in deps:
-            dep._pause_if_requested()
-            current_state = dep._guess_own_state()
-            logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
+        try:
+            for dep in deps:
+                dep._pause_if_requested()
+                current_state = dep._guess_own_state()
+                logger.debug(
+                    f"Guessed state of {dep.__class__.__name__} = {current_state}"
+                )
 
-            if current_state & CalibrationResult.BAD_EXPIRED and not force:
-                current_state, _ = dep._do_check_own_state()
+                if current_state & CalibrationResult.BAD_EXPIRED and not force:
+                    current_state, _ = dep._do_check_own_state()
 
-            if current_state != CalibrationResult.OK or force:
-                try:
-                    current_state, _ = dep._fix_own_state_until_ok()
-                except CalibrationError:
-                    # Only reachable when the node has a finite attempt budget:
-                    # record ourselves as broken-by-dependency before the error
-                    # unwinds, so a later guess does not trust our stale check.
-                    self.__most_recent_check_result = CalibrationResult.BAD_DEPS
-                    self.__most_recent_check_timestamp = time()
-                    self.__most_recent_check_data = None
-                    raise
+                if current_state != CalibrationResult.OK or force:
+                    try:
+                        current_state, _ = dep._fix_own_state_until_ok()
+                    except CalibrationError:
+                        # Only reachable when the node has a finite attempt budget:
+                        # record ourselves as broken-by-dependency before the error
+                        # unwinds, so a later guess does not trust our stale check.
+                        self.__most_recent_check_result = CalibrationResult.BAD_DEPS
+                        self.__most_recent_check_timestamp = time()
+                        self.__most_recent_check_data = None
+                        raise
 
-        return current_state
+            return current_state
+        finally:
+            deactivate_active_calibration()
 
-    def seed_precompile_pool(self, pool) -> None:
-        """Seed ``pool`` with every check/fix kernel in this calibration's DAG
-        and point the host walk at the precompiled artifacts.
+    def host_setup(self):
+        # Record that this node has been set up at least once, so _activate can
+        # tell an ndscan-managed node (e.g. a monitor, set up at experiment
+        # start) from a detached dependency that has never been prepared.
+        self._lifecycle_setup_ran = True
+        super().host_setup()
 
-        Call once on the host before any check/fix walk runs — the calibration
-        client base class does this at ``host_setup`` from ``dag.get_dependencies``.
-        Idempotent. Host-mode calibrations (host ``check_own_state``) are left
-        alone and keep measuring directly, so plain qbutler use is unchanged.
+    def _activate(self) -> None:
+        """Make this node's measurement the active one, honouring the ndscan
+        fragment contract: its ``host_setup`` has run, and still holds, when its
+        kernels execute.
+
+        Calibration measurements share physical hardware (one camera, one set
+        of beams), so their ``host_setup``\\ s must not coexist: whichever ran
+        last owns the hardware. This is the serialisation point — at most one
+        node is set up at a time (:data:`_active_node`), and every switch is a
+        full handover: ``host_cleanup`` of the previously-active node, then
+        ``host_setup`` of this one. Called from :meth:`_do_check_own_state` /
+        :meth:`_do_fix_own_state`, i.e. on the host, immediately before a
+        node's kernels are dispatched.
+
+        The slot is claimed *before* ``host_setup`` runs, mirroring ndscan's
+        ``try: host_setup ... finally: host_cleanup``: if setup fails halfway,
+        the node still gets its cleanup on the next handover (fragments must
+        tolerate cleanup after a failed setup, as in plain ndscan).
+
+        The first activation also compiles this node's kernels into the
+        precompile pool (lazy): compilation embeds attributes ``host_setup``
+        creates, so it can only happen once the node has been set up — which
+        is exactly now.
+
+        Host-mode nodes (host ``check_own_state``) do not join the handover:
+        monitors are checked concurrently from several threads and hold no
+        rig hardware. A host-mode node that has never been set up (a detached
+        dependency in a client walk) gets a one-time ``host_setup`` here;
+        one already set up by ndscan (an attached monitor) is left alone.
+        """
+        global _active_node
+        if not (is_kernel(self.check_own_state) or is_kernel(self.fix_own_state)):
+            if not getattr(self, "_lifecycle_setup_ran", False):
+                self.host_setup()
+            return
+
+        with _active_node_lock:
+            if _active_node is self:
+                return
+            if _active_node is not None:
+                node, _active_node = _active_node, None
+                node.host_cleanup()
+            _active_node = self
+            self.host_setup()
+
+        pool = getattr(self, "_precompile_pool", None)
+        if pool is not None and not self._precompile_seeded:
+            self._seed_own_precompile(pool)
+            self._precompile_seeded = True
+
+    def attach_precompile_pool(self, pool) -> None:
+        """Point every node in this calibration's DAG at ``pool`` for kernel
+        precompilation.
+
+        Call once on the host — the calibration client base class does this at
+        ``host_setup`` from ``dag.get_dependencies``. Idempotent. Attaching
+        does NOT compile anything: a node's kernels are compiled lazily, on its
+        first activation (see :meth:`_activate`), because compilation needs the
+        node's ``host_setup`` to have run and setups are serialised. Host-mode
+        calibrations (host ``check_own_state``) are left alone and keep
+        measuring directly, so plain qbutler use is unchanged.
 
         A node whose ``check_own_state`` drives a kernel measurement on the host
         (rather than being a kernel itself) should override
@@ -769,10 +876,9 @@ class Calibration(ExpFragment):
         its host loop through the pool.
         """
         for node in dag.get_dependencies(self):
-            node._seed_own_precompile(pool)
+            node._precompile_pool = pool
 
     def _seed_own_precompile(self, pool) -> None:
-        self._precompile_pool = pool
         self._precompile_check_key = None
         self._precompile_fix_key = None
         self._precompile_fix_own_key = None
@@ -814,6 +920,7 @@ class Calibration(ExpFragment):
         self._kopt_stores = [stores[spec.name] for spec in param_specs]
 
     def _do_check_own_state(self) -> Tuple[CalibrationResult, Any]:
+        self._activate()
         pool = getattr(self, "_precompile_pool", None)
         check_key = getattr(self, "_precompile_check_key", None)
         if pool is not None and check_key is not None:
@@ -831,6 +938,7 @@ class Calibration(ExpFragment):
         default-optimizer node's fix is pooled one level down, inside
         :meth:`_run_optimizer`.
         """
+        self._activate()
         pool = getattr(self, "_precompile_pool", None)
         fix_own_key = getattr(self, "_precompile_fix_own_key", None)
         if pool is not None and fix_own_key is not None:

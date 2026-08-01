@@ -61,6 +61,23 @@ Custom optimizers are generators: yield `{param_name: value}` dicts, receive `(C
 
 Optimisable parameters auto-persist to ARTIQ datasets under the key `CalibrationName.param_name`.
 
+### Serialised measurement lifecycle
+
+Calibration measurements share physical hardware (e.g. one camera), so their
+`host_setup`s must not coexist. qbutler owns the lifecycle of every calibration
+node a client declares (`setattr_calibration` detaches them from ndscan's tree
+walk): at most one node is set up at a time, and the walk performs a full
+handover — `host_cleanup` of the previously-active node, `host_setup` of the
+next — immediately before each node's measurement runs (`Calibration._activate`).
+Every walk deactivates on exit, so the main experiment fragment (which ndscan
+alone manages, with its own setup/cleanup brackets around every escape) always
+re-enters on untouched hardware. Kernels compile lazily, on a node's first
+activation, since compilation embeds attributes `host_setup` creates.
+Consequence: calibration fragments' `host_setup`/`host_cleanup` must tolerate
+repeated cycles, and science kernels read calibration outputs via their own
+dataset-defaulted parameters, not by reaching into the (detached) calibration
+subtree.
+
 ### Pausing and termination
 
 A fix walk yields to the ARTIQ scheduler between the shots of a recalibration, so a run can be preempted or terminated without waiting for the whole DAG to finish. `scheduler.check_pause()` is rate-limited by a process-wide gate (`PAUSE_CHECK_INTERVAL`, default 1 s) so fast calibrations don't pay for a round trip to the master per shot.
