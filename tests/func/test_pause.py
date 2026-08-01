@@ -12,6 +12,7 @@ import pytest
 from artiq.language.core import TerminationRequested
 
 from qbutler import calibration as calibration_module
+from qbutler import scoping
 from qbutler.calibration import OPTIMIZER_DATASET
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
@@ -34,6 +35,9 @@ class FakeScheduler:
         self.terminate = terminate
         self.checks = 0
         self.pauses = 0
+        # As the real scheduler does: qbutler namespaces its live-view datasets
+        # by the pipeline it reads from here.
+        self.pipeline_name = "main"
 
     def check_pause(self, rid=None) -> bool:
         self.checks += 1
@@ -93,7 +97,8 @@ class BrokenParent(Calibration):
 
 def _optimizer_points(cal):
     """The points the live optimizer trace recorded for ``cal``'s last fix."""
-    table = cal.get_dataset(OPTIMIZER_DATASET, default={}, archive=False)
+    key = scoping.scoped_key(OPTIMIZER_DATASET, cal)
+    table = cal.get_dataset(key, default={}, archive=False)
     return [tuple(point) for point in table[type(cal).__name__]["points"]]
 
 

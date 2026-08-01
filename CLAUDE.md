@@ -77,6 +77,16 @@ Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
 
+### Applets and dataset scoping (ccb.py, scoping.py, applets/)
+
+Runs launch their own dashboard applets via the CCB — a DAG overview, plus one optimizer-trace plot per calibration class. Applets are created on every walk entry; creation is best-effort and never raises.
+
+Two datasets are **scoped per pipeline** by `scoping.scoped_key()`: `calibrations.dag.<pipeline>` and `calibrations.optimizer.<pipeline>`. So are the applet groups (`Calibrations/<pipeline>[/Optimizers]`, via `scoping.applet_group()`). Without this, runs in two pipelines fight — the dashboard keys applets on (name, group) and replaces the existing spec, and both would publish over one dataset key.
+
+`calibrations.status` is deliberately **not** scoped: when a calibration was last checked is a property of the apparatus, and `_recall_status()` relies on a walk in one pipeline seeing a check another already did. Where no pipeline can be determined (`artiq_run`, a bare unit test) the unscoped key and group are used.
+
+The applets take their dataset keys as CLI arguments, so scoping needs no applet-side changes.
+
 ## Known stubs
 
 `build_interface_from_calibration()` in `entrypoints.py` is unimplemented. Leave it alone unless a task explicitly targets it.
