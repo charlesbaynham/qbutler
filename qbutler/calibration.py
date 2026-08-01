@@ -525,6 +525,14 @@ class Calibration(ExpFragment):
             "You should override this method with your own code: see the docs"
         )
 
+    def build(self, *args, **kwargs):
+        # Scope this build onto the enclosing tree's registry — or, for a
+        # Calibration built on its own (a test, a bare fragment), a fresh one
+        # of its own (see dag.building). add_dependency's dedup lookup and the
+        # registration at the end of build_fragment both land on it.
+        with dag.building():
+            super().build(*args, **kwargs)
+
     def build_fragment(self, *args, **kwargs) -> None:
         """
         Set up the calibration

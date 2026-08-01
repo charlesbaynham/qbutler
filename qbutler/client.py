@@ -164,6 +164,13 @@ class CalibratedExpFragment(ExpFragment):
     _force_consumed: bool = False
     _force_fix_pending: bool = False
 
+    def build(self, *args, **kwargs):
+        # One experiment = one calibration tree = one registry: scoping the
+        # whole build means every setattr_calibration target this client
+        # attaches shares dependencies with the others (see dag.building).
+        with dag.building():
+            super().build(*args, **kwargs)
+
     def host_setup(self):
         super().host_setup()
         self._arm_calibration()
@@ -472,9 +479,10 @@ def make_calibrated_experiment(
             # de-aliases the dataset broadcaster, which captured its parent
             # action at worker startup and so escapes the class-level wrap.
             install_worker_ipc_lock(self)
-            # One whole-heap sweep for the whole tree, not one per
-            # add_dependency: the master's build deadline is 15 s and the
-            # sweep's cost grows with the heap (see dag.building).
+            # One experiment = one calibration tree = one registry (see
+            # dag.building). The fragment's own build also enters the scope;
+            # entering here too keeps the whole experiment on one registry
+            # even if that ever changes.
             with dag.building():
                 super().build(
                     lambda: fragment_class(self, [], *args),

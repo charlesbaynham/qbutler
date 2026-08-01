@@ -64,7 +64,7 @@ The `context` label is set by `_checking_for()` around each call site; nested an
 
 ### DAG (dag.py)
 
-Uses NetworkX + weak references. Calibrations are deduplicated by default — calling `add_dependency(SomeClass)` from two different parents yields one shared instance. Pass `create_duplicates=True` to force separate instances. **Do not cache** the output of `get_graph()` or `get_dependencies()` — the graph is rebuilt from weak refs and stale references will include GC'd calibrations.
+One strongly-referenced `DagRegistry` **per calibration tree**, created by the outermost `dag.building()` scope (entered by `Calibration.build`, `CalibratedExpFragment.build`, and the client shim — one experiment builds one tree). Calibrations are deduplicated by default — calling `add_dependency(SomeClass)` from two different parents *in the same tree* yields one shared instance; an instance from any other build, dead or alive, is unreachable by construction, which is why no `gc.collect()` is needed anywhere (the old process-global weakref map needed a whole-heap collection per `add_dependency` to stop dead trees answering dedup, and that is what blew the ARTIQ master's 15 s build deadline). Pass `create_duplicates=True` to force separate instances. Walk-time queries (`get_dependencies`, `get_union_dependencies`, `get_graph`) are keyed by any object of the tree; `get_calibrations_of_type` only works inside a `building()` scope. The registry lives exactly as long as its tree and dies with it by ordinary garbage collection.
 
 ### Optimizers (optimizers.py)
 

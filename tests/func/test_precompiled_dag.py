@@ -6,8 +6,6 @@ makes background compilation thread-safe; and an end-to-end pooled fix walk that
 optimises a kernel-checked calibration.
 """
 
-import gc
-
 import pytest
 
 from qbutler import dag
@@ -15,14 +13,6 @@ from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 from qbutler.precompile import PrecompilePool
 from tests.func import kernel_calibrations
-
-
-@pytest.fixture(autouse=True)
-def _clear_dag():
-    gc.collect()
-    dag._dependency_map.clear()
-    yield
-    dag._dependency_map.clear()
 
 
 def _arm_nodes(cal):

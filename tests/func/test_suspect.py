@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from qbutler import dag
 from qbutler.applets.dag_applet import _node_state
 from qbutler.calibration import STATUS_DATASET
 from qbutler.calibration import Calibration
@@ -239,8 +240,11 @@ def test_diamond_suspicion_clears_per_suspector(fragment_factory):
         def check_own_state(self):
             return CalibrationResult.OK, None
 
-    x = fragment_factory(X)
-    y = fragment_factory(Y)
+    # Both targets in one build scope, as one experiment's shim would do:
+    # sharing an instance is per-tree (see dag.building)
+    with dag.building():
+        x = fragment_factory(X)
+        y = fragment_factory(Y)
     d = x.D
     assert y.D is d  # shared instance: this is a diamond, not two chains
 

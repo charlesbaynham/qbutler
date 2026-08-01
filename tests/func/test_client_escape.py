@@ -8,8 +8,6 @@ native (FragmentScanExperiment), so the same tests also pin the dashboard
 surface: PARAMS schema exposure and override processing.
 """
 
-import gc
-
 import pytest
 from artiq.experiment import kernel
 from artiq.language.environment import ProcessArgumentManager
@@ -18,19 +16,10 @@ from ndscan.experiment.parameters import FloatParam
 from ndscan.utils import PARAMS_ARG_KEY
 from sipyco import pyon
 
-from qbutler import dag
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 from qbutler.client import CalibratedExpFragment
 from qbutler.client import make_calibrated_experiment
-
-
-@pytest.fixture(autouse=True)
-def _clear_dag():
-    gc.collect()
-    dag._dependency_map.clear()
-    yield
-    dag._dependency_map.clear()
 
 
 class DriftingCal(Calibration):
