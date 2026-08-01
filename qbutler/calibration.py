@@ -198,15 +198,10 @@ def fix_targets(targets, force=False) -> None:
             if current_state & CalibrationResult.BAD_EXPIRED and not force:
                 current_state, _ = dep._do_check_own_state()
 
-<<<<<<< HEAD
             if current_state != CalibrationResult.OK or force:
                 dep._fix_own_state_until_ok()
     finally:
         deactivate_active_calibration()
-=======
-        if current_state != CalibrationResult.OK or force:
-            dep._fix_own_state_until_ok()
->>>>>>> origin/master
 
 
 def check_targets(
@@ -779,7 +774,6 @@ class Calibration(ExpFragment):
         # and check their states, ending with this object
         deps = dag.get_dependencies(self)
         logger.debug(f"Fixing all dependencies of {self.__class__.__name__}")
-<<<<<<< HEAD
         try:
             for dep in deps:
                 dep._pause_if_requested()
@@ -802,27 +796,6 @@ class Calibration(ExpFragment):
                         self.__most_recent_check_timestamp = time()
                         self.__most_recent_check_data = None
                         raise
-=======
-        for dep in deps:
-            dep._pause_if_requested()
-            current_state = dep._guess_own_state()
-            logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
-
-            if current_state & CalibrationResult.BAD_EXPIRED and not force:
-                current_state, _ = dep._do_check_own_state()
-
-            if current_state != CalibrationResult.OK or force:
-                try:
-                    current_state, _ = dep._fix_own_state_until_ok()
-                except CalibrationError:
-                    # Only reachable when the node has a finite attempt budget:
-                    # record ourselves as broken-by-dependency before the error
-                    # unwinds, so a later guess does not trust our stale check.
-                    self.__most_recent_check_result = CalibrationResult.BAD_DEPS
-                    self.__most_recent_check_timestamp = time()
-                    self.__most_recent_check_data = None
-                    raise
->>>>>>> origin/master
 
             return current_state
         finally:
