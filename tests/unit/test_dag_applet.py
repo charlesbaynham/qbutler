@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from qbutler.applets.dag_applet import H_GAP
+from qbutler.applets.dag_applet import _build_layers
 from qbutler.applets.dag_applet import _layer_by_depth
 from qbutler.applets.dag_applet import _node_label
 from qbutler.applets.dag_applet import _node_state
@@ -87,6 +88,51 @@ def test_layout_is_deterministic():
     nodes = ["a", "b", "c", "d", "e"]
     edges = [("a", "c"), ("b", "c"), ("b", "d"), ("c", "e")]
     assert _layout(nodes, edges) == _layout(nodes, edges)
+
+
+def test_isolated_nodes_wrap_into_a_grid():
+    # A monitor pipeline: dozens of calibrations with no edges at all must
+    # wrap into several rows, not one endless line.
+    nodes = [f"Monitor{i:02d}" for i in range(24)]
+    widths = {n: 150 for n in nodes}
+    layers = _build_layers(nodes, [], widths, H_GAP, row_h=130, aspect=1107 / 327)
+    assert len(layers) > 1
+    assert sorted(n for layer in layers for n in layer) == nodes
+
+    # And every row still keeps the no-overlap spacing guarantee.
+    xs = _x_positions(layers, [], widths, H_GAP)
+    for layer in layers:
+        for left, right in zip(layer, layer[1:]):
+            clearance = (xs[right] - xs[left]) - (widths[left] + widths[right]) / 2
+            assert clearance >= H_GAP - 1e-9
+
+
+def test_grid_shape_follows_widget_aspect():
+    nodes = [f"m{i}" for i in range(30)]
+    widths = {n: 120 for n in nodes}
+    wide = _build_layers(nodes, [], widths, H_GAP, row_h=130, aspect=4.0)
+    tall = _build_layers(nodes, [], widths, H_GAP, row_h=130, aspect=0.5)
+    assert len(wide) < len(tall)
+    assert max(len(row) for row in wide) > max(len(row) for row in tall)
+
+
+def test_isolated_nodes_grid_sits_below_the_dag():
+    nodes = ["app", "dep", "lonely_a", "lonely_b", "lonely_c"]
+    edges = [("app", "dep")]
+    widths = {n: 100 for n in nodes}
+    layers = _build_layers(nodes, edges, widths, H_GAP, row_h=130, aspect=1.0)
+    assert layers[0] == ["app"]
+    assert layers[1] == ["dep"]
+    grid = [n for layer in layers[2:] for n in layer]
+    assert sorted(grid) == ["lonely_a", "lonely_b", "lonely_c"]
+
+
+def test_fully_connected_graph_is_not_wrapped():
+    nodes = ["app", "cal", "laser"]
+    edges = [("app", "cal"), ("cal", "laser")]
+    widths = {n: 100 for n in nodes}
+    layers = _build_layers(nodes, edges, widths, H_GAP, row_h=130, aspect=3.0)
+    assert layers == [["app"], ["cal"], ["laser"]]
 
 
 def test_node_state():

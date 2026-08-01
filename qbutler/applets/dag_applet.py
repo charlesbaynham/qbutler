@@ -11,9 +11,11 @@ the per-calibration state in ``calibrations.status``:
 
 Nodes are layered by dependency depth (dependents above their dependencies),
 ordered within each layer to reduce edge crossings, and spaced by the pixel
-size of their labels so nothing overlaps. The graph is drawn at its natural
-size, centred in the widget — it is scaled down uniformly if it does not fit,
-but never stretched to fill.
+size of their labels so nothing overlaps. Nodes with no edges at all — e.g. a
+monitor pipeline of dozens of independent calibrations — are wrapped into a
+grid shaped to the widget instead of one endless line. The graph is drawn at
+its natural size, centred in the widget — it is scaled down uniformly if it
+does not fit, but never stretched to fill.
 
 qbutler launches this applet automatically the first time a calibration DAG is
 published (see :func:`qbutler.ccb.create_dag_applet`), one per pipeline, passing
@@ -153,6 +155,50 @@ def _x_positions(layers, edges, widths, gap):
     return xs
 
 
+def _wrapped_rows(nodes, widths, gap, row_h, aspect):
+    """Wrap ``nodes`` into rows of a grid whose overall shape roughly
+    matches ``aspect`` (width/height), rather than one endless line."""
+    total = sum(widths[n] for n in nodes) + gap * (len(nodes) - 1)
+    target = max(
+        max(widths[n] for n in nodes), (max(aspect, 0.01) * total * row_h) ** 0.5
+    )
+    rows = []
+    row, filled = [], 0.0
+    for n in nodes:
+        step = widths[n] + (gap if row else 0)
+        if row and filled + step > target:
+            rows.append(row)
+            row, filled = [n], widths[n]
+        else:
+            row.append(n)
+            filled += step
+    if row:
+        rows.append(row)
+    return rows
+
+
+def _build_layers(nodes, edges, widths, gap, row_h, aspect):
+    """Split the graph into the rows it is drawn as.
+
+    The connected part keeps its dependency layering, crossing-reduced. Nodes
+    with no edges carry no layout information, so a line of them is pure
+    waste — they are wrapped into a grid (below the DAG, if any) shaped to
+    the widget's aspect ratio instead.
+    """
+    present = set(nodes)
+    linked = {n for e in edges if set(e) <= present for n in e}
+    connected = [n for n in nodes if n in linked]
+    isolated = [n for n in nodes if n not in linked]
+
+    layers = []
+    if connected:
+        depth = _layer_by_depth(connected, edges)
+        layers += _ordered_layers(connected, edges, depth)
+    if isolated:
+        layers += _wrapped_rows(isolated, widths, gap, row_h, aspect)
+    return layers
+
+
 def _node_state(entry, now):
     if not entry or entry.get("last_check") is None:
         return "unknown", ""
@@ -242,15 +288,17 @@ class QbutlerDAGWidget(QtWidgets.QWidget):
 
         # Layout, in px: space nodes by the size their labels actually render
         # at, so neither the circles nor the text can ever overlap.
-        depth = _layer_by_depth(nodes, edges)
-        layers = _ordered_layers(nodes, edges, depth)
         widths = {
             n: max(NODE_SIZE, max(fm.horizontalAdvance(line) for line in lines[n]))
             for n in nodes
         }
-        xs = _x_positions(layers, edges, widths, H_GAP)
-
         line_h = fm.height()
+        avail_w = max(1.0, self.width() - 2 * MARGIN)
+        avail_h = max(1.0, self.height() - top - MARGIN)
+        max_label_h = max(len(lines[n]) for n in nodes) * line_h
+        row_h = NODE_SIZE + LABEL_OFFSET + max_label_h + V_GAP
+        layers = _build_layers(nodes, edges, widths, H_GAP, row_h, avail_w / avail_h)
+        xs = _x_positions(layers, edges, widths, H_GAP)
         ys = {}
         y = 0.0
         for layer in layers:
@@ -266,8 +314,6 @@ class QbutlerDAGWidget(QtWidgets.QWidget):
 
         # Centre the drawing at natural size; scale down uniformly only if it
         # does not fit. Never stretch it to fill the widget.
-        avail_w = max(1.0, self.width() - 2 * MARGIN)
-        avail_h = max(1.0, self.height() - top - MARGIN)
         scale = min(1.0, avail_w / max(total_w, 1.0), avail_h / max(total_h, 1.0))
         painter.translate(self.width() / 2, top + avail_h / 2)
         painter.scale(scale, scale)
