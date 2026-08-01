@@ -1,5 +1,6 @@
 import logging
 import threading
+from contextlib import contextmanager
 from enum import Flag
 from enum import auto
 from time import time
@@ -71,6 +72,23 @@ DEFAULT_MAX_FIX_ATTEMPTS = None
 #: so that its budget is read from :data:`DEFAULT_MAX_FIX_ATTEMPTS` when a fix
 #: walk actually runs (rather than being frozen at build time).
 _MAX_FIX_ATTEMPTS_UNSET = object()
+
+#: A check of the calibration's real state: a check walk, or the re-check a fix
+#: walk makes after fixing a node. This is the check a monitor cares about.
+CHECK_CONTEXT_CHECK = "check"
+
+#: A trial measurement made by an optimizer while sweeping for a better point.
+#: Its result describes the point being tried, not the state the calibration was
+#: left in, so a health monitor should filter these out.
+CHECK_CONTEXT_SWEEP = "sweep"
+
+#: The confirmation measurement a fix makes with the best parameters applied,
+#: i.e. the metric "at peak" that is about to be committed.
+CHECK_CONTEXT_VERIFY = "verify"
+
+#: Not a measurement at all: the synthetic BAD_DATA recorded when a fix gave up
+#: with a :class:`CalibrationError` before it could measure anything.
+CHECK_CONTEXT_FIX_FAILED = "fix_failed"
 
 
 class _PauseCheckGate:
@@ -270,6 +288,10 @@ class Calibration(ExpFragment):
     parameters as ndscan ExpFragments.
 
     """
+
+    #: What the check currently in flight is for (see :meth:`_on_checked`). A
+    #: class attribute so it reads correctly before (and without) a build.
+    _check_context = CHECK_CONTEXT_CHECK
 
     def build_calibration(self):
         """
@@ -993,7 +1015,8 @@ class Calibration(ExpFragment):
                 # the same treatment: record the node as broken and try again.
                 reason = str(e)
                 result, data = CalibrationResult.BAD_DATA, None
-                self._record_own_check(result, data)
+                with self._checking_for(CHECK_CONTEXT_FIX_FAILED):
+                    self._record_own_check(result, data)
             else:
                 logger.debug("Result of fix of %s = %s", name, result)
                 if result == CalibrationResult.OK:
@@ -1098,6 +1121,7 @@ class Calibration(ExpFragment):
         )
 
         self._publish_status()
+        self._fire_checked(result, data)
 
     def _publish_status(self) -> None:
         """Best-effort mirror of check state to :data:`STATUS_DATASET`.
@@ -1180,25 +1204,84 @@ class Calibration(ExpFragment):
         except Exception:
             logger.warning("Could not publish optimizer point", exc_info=True)
 
-    def _on_recalibrated(self, committed_params: dict) -> None:
+    def _on_recalibrated(self, committed_params: dict, metric) -> None:
         """Hook fired after a fix commits new optimal parameter values.
 
         ``committed_params`` maps each optimizable-parameter name to the value
-        just persisted. The base implementation does nothing: qbutler stays
-        agnostic about where recalibrations are recorded. Override this (e.g.
-        via a downstream mix-in) to log them somewhere such as a database.
+        just persisted, and ``metric`` is the "data" the verification check
+        measured with those values applied — the quantity at its optimum, which
+        is what says whether the committed parameters are any good. It is None
+        if the calibration measures no metric.
+
+        The base implementation does nothing: qbutler stays agnostic about where
+        recalibrations are recorded. Override this (e.g. via a downstream
+        mix-in) to log them somewhere such as a database.
 
         Runs at the end of a successful fix; the caller swallows any exception,
         so an override need not be defensive, but must not have side effects
         that a calibration run depends on.
         """
 
-    def _fire_recalibrated(self, committed_params: dict) -> None:
+    def _fire_recalibrated(self, committed_params: dict, metric) -> None:
         """Best-effort dispatch to :meth:`_on_recalibrated`; never raises."""
         try:
-            self._on_recalibrated(dict(committed_params))
+            self._on_recalibrated(dict(committed_params), metric)
         except Exception:
             logger.warning("_on_recalibrated hook failed", exc_info=True)
+
+    def _on_checked(self, result: "CalibrationResult", metric, context: str) -> None:
+        """Hook fired every time a check outcome is recorded.
+
+        The counterpart of :meth:`_on_recalibrated` for checks: it sees every
+        measurement qbutler records, passing or failing, so a downstream
+        override can keep a history of how the apparatus is actually behaving
+        rather than only of the moments it was recalibrated.
+
+        Args:
+            result: what the check concluded.
+            metric: the "data" :meth:`check_own_state` returned alongside it
+                (None if the calibration measures no metric).
+            context: which kind of check this was — one of
+                :data:`CHECK_CONTEXT_CHECK`, :data:`CHECK_CONTEXT_SWEEP`,
+                :data:`CHECK_CONTEXT_VERIFY` or
+                :data:`CHECK_CONTEXT_FIX_FAILED`. Worth honouring: an
+                optimizer deliberately sweeps through bad points, so treating a
+                ``sweep`` result as a statement about the apparatus's health
+                would make a healthy system look broken every time it was
+                fixed.
+
+        Note that ``sweep`` points are only reported by the host optimizer
+        loop. The resident kernel loop reports its trial points over its own
+        per-point RPC (:meth:`_publish_optimizer_point`) without recording them
+        as checks, so a kernel-mode fix fires this hook for its verification
+        measurement only.
+
+        The base implementation does nothing. The caller swallows any
+        exception, so an override need not be defensive, but must not have side
+        effects that a calibration run depends on — and must be cheap, since
+        a host-mode fix fires it once per optimizer point.
+        """
+
+    def _fire_checked(self, result: "CalibrationResult", metric) -> None:
+        """Best-effort dispatch to :meth:`_on_checked`; never raises."""
+        try:
+            self._on_checked(result, metric, self._check_context)
+        except Exception:
+            logger.warning("_on_checked hook failed", exc_info=True)
+
+    @contextmanager
+    def _checking_for(self, context: str):
+        """Label the checks recorded inside this block (see :meth:`_on_checked`).
+
+        Nests, and always restores the previous label, so a fix that raises
+        mid-sweep does not leave later checks mislabelled as sweep points.
+        """
+        previous = self._check_context
+        self._check_context = context
+        try:
+            yield
+        finally:
+            self._check_context = previous
 
     def _recall_status(self) -> bool:
         """Hydrate check state from :data:`STATUS_DATASET` (a previous worker
@@ -1320,7 +1403,8 @@ class Calibration(ExpFragment):
                 for name, value in param_dict.items():
                     stores[name].set_value(value)
 
-                result, data = self._do_check_own_state()
+                with self._checking_for(CHECK_CONTEXT_SWEEP):
+                    result, data = self._do_check_own_state()
 
                 logger.debug(
                     "Optimizer point %s: result=%s, data=%s", param_dict, result, data
@@ -1355,11 +1439,12 @@ class Calibration(ExpFragment):
             for name, value in best_params.items():
                 stores[name].set_value(value)
 
-            result, data = self._do_check_own_state()
+            with self._checking_for(CHECK_CONTEXT_VERIFY):
+                result, data = self._do_check_own_state()
             if result != CalibrationResult.OK:
                 raise CalibrationError("Best parameters did not pass check")
 
-            self._fire_recalibrated(best_params)
+            self._fire_recalibrated(best_params, data)
 
         finally:
             for spec in param_specs:
@@ -1436,6 +1521,7 @@ class Calibration(ExpFragment):
         self._kopt_best_values = None
         self._kopt_best_data = None
         self._kopt_verify_result = None
+        self._kopt_verify_data = None
         self._kopt_pause_pending = False
         self._reset_optimizer_trace([spec.name for spec in self._kopt_specs])
 
@@ -1465,7 +1551,7 @@ class Calibration(ExpFragment):
                 broadcast=True,
                 persist=True,
             )
-        self._fire_recalibrated(best_params)
+        self._fire_recalibrated(best_params, self._kopt_verify_data)
 
     def _kopt_cleanup(self) -> None:
         param_specs = self._kopt_specs
@@ -1477,6 +1563,7 @@ class Calibration(ExpFragment):
             "_kopt_best_values",
             "_kopt_best_data",
             "_kopt_verify_result",
+            "_kopt_verify_data",
             "_kopt_pause_pending",
         ):
             if hasattr(self, attr):
@@ -1599,7 +1686,9 @@ class Calibration(ExpFragment):
         """RPC: record the in-kernel verification measurement."""
         result = CalibrationResult(int(result))
         self._kopt_verify_result = result
-        self._record_own_check(result, data)
+        self._kopt_verify_data = data
+        with self._checking_for(CHECK_CONTEXT_VERIFY):
+            self._record_own_check(result, data)
 
     @kernel
     def _optimizer_kernel_loop(self):

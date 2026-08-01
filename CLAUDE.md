@@ -51,6 +51,17 @@ All build-phase methods (`add_dependency`, `set_timeout`, `setattr_param_optimiz
 
 A `Flag` enum: `OK`, `BAD_EXPIRED`, `BAD_DEPS`, `BAD_DATA`, `INVALID_DATA`. Values can be OR'd together. Check membership with bitwise AND: `if result & CalibrationResult.OK`.
 
+### Outcome hooks
+
+qbutler records calibration outcomes to datasets, but stays agnostic about where else they go: two no-op hooks on `Calibration` let a downstream mix-in (in practice `icl_experiments`' `InfluxCalibrationLogMixin`) forward them to a database.
+
+- `_on_recalibrated(committed_params, metric)` — a fix committed new optimal parameters. `metric` is the `check_own_state` data measured with those parameters applied, i.e. the quantity at its optimum.
+- `_on_checked(result, metric, context)` — a check outcome was recorded, passing or failing. `context` says what kind of check it was: `check` (a real check, or a fix walk's re-check), `sweep` (an optimizer trial point), `verify` (the confirmation of the best point) or `fix_failed` (the synthetic BAD_DATA of a fix that gave up). Honour it — an optimizer sweeps through deliberately bad points, so counting `sweep` results as apparatus health makes a healthy system look broken every time it is fixed.
+
+Both are dispatched best-effort (`_fire_*`), so an override that raises is logged and ignored rather than failing the run. `_on_checked` fires once per optimizer point in a host-mode fix, so it must be cheap. Kernel-mode fixes do not record trial points as checks, so they fire it for the verification measurement only.
+
+The `context` label is set by `_checking_for()` around each call site; nested and always restored.
+
 ### DAG (dag.py)
 
 Uses NetworkX + weak references. Calibrations are deduplicated by default — calling `add_dependency(SomeClass)` from two different parents yields one shared instance. Pass `create_duplicates=True` to force separate instances. **Do not cache** the output of `get_graph()` or `get_dependencies()` — the graph is rebuilt from weak refs and stale references will include GC'd calibrations.
