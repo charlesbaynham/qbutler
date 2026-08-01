@@ -84,9 +84,25 @@ A fix walk yields to the ARTIQ scheduler between the shots of a recalibration, s
 
 A kernel cannot pause itself — `scheduler.pause()` has to hand the core device over — so the resident optimizer kernel loop returns to the host when a pause is pending, the host pauses, and the loop is re-entered where it left off (`_drive_optimizer_kernel_loop`). Checks are *not* paused: `MonitorController` runs them on worker threads.
 
+### Fix retries
+
+A fix walk fixes a node and re-checks it; if the re-check is still not OK — or the fix gave up with a `CalibrationError`, e.g. an optimizer that found no valid point — **the node is simply fixed again, indefinitely by default** (`Calibration._fix_own_state_until_ok`). Crashing the experiment is opt-in: `set_max_fix_attempts(n)` bounds one calibration, `calibration.DEFAULT_MAX_FIX_ATTEMPTS` bounds the whole process (`= 1` restores the old fail-fast behaviour). The budget is read at fix time, not build time.
+
+Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc. is a bug in the calibration and propagates immediately. The loop yields to the scheduler between attempts, so a run stuck on a hopeless calibration can still be terminated.
+
 ### Timeout behaviour
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
+
+### Applets and dataset scoping (ccb.py, scoping.py, applets/)
+
+Runs launch their own dashboard applets via the CCB — a DAG overview, plus one optimizer-trace plot per calibration class. Applets are created on every walk entry; creation is best-effort and never raises.
+
+Two datasets are **scoped per pipeline** by `scoping.scoped_key()`: `calibrations.dag.<pipeline>` and `calibrations.optimizer.<pipeline>`. So are the applet groups (`Calibrations/<pipeline>[/Optimizers]`, via `scoping.applet_group()`). Without this, runs in two pipelines fight — the dashboard keys applets on (name, group) and replaces the existing spec, and both would publish over one dataset key.
+
+`calibrations.status` is deliberately **not** scoped: when a calibration was last checked is a property of the apparatus, and `_recall_status()` relies on a walk in one pipeline seeing a check another already did. Where no pipeline can be determined (`artiq_run`, a bare unit test) the unscoped key and group are used.
+
+The applets take their dataset keys as CLI arguments, so scoping needs no applet-side changes.
 
 ## Known stubs
 

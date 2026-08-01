@@ -8,24 +8,29 @@ from typing import Type
 import networkx as nx
 
 from . import ccb
+from . import scoping
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .calibration import Calibration
 
-#: Broadcast dataset holding {"nodes": [...], "edges": [[parent, dependency], ...]}
-#: describing the currently-instantiated calibration DAG (class names).
+#: Base of the broadcast dataset holding {"nodes": [...], "edges": [[parent,
+#: dependency], ...]} describing the currently-instantiated calibration DAG
+#: (class names). Suffixed with the running pipeline's name, so simultaneous
+#: walks in different pipelines each publish their own graph rather than
+#: overwriting each other's (see :mod:`qbutler.scoping`).
 DAG_DATASET = "calibrations.dag"
 
 
 def publish_dag(cal: "Calibration") -> None:
-    """Best-effort publish of the DAG structure to :data:`DAG_DATASET`.
+    """Best-effort publish of the DAG structure to this pipeline's DAG dataset.
 
     Also ensures the calibration-DAG overview applet exists, so the tree is
     visualised as soon as any walk runs. Never raises: dataset plumbing must
     not be able to break a calibration run. ``cal`` is used for its
-    ``set_dataset`` and to reach the ``ccb`` device.
+    ``set_dataset``, to reach the ``ccb`` device, and for the pipeline its
+    scheduler is running in.
     """
     ccb.create_dag_applet(cal)
     try:
@@ -37,7 +42,7 @@ def publish_dag(cal: "Calibration") -> None:
             if a() is not None and b() is not None
         )
         cal.set_dataset(
-            DAG_DATASET,
+            scoping.scoped_key(DAG_DATASET, cal),
             {"nodes": nodes, "edges": edges},
             broadcast=True,
             persist=True,

@@ -6,6 +6,14 @@
       "Bash(git rm *)"
     ]
   },
+  "extraKnownMarketplaces": {
+    "vendored-refs": {
+      "source": {
+        "source": "url",
+        "url": "https://gitlab.com/charlesbaynham/claude-code-vendored_refs.git"
+      }
+    }
+  },
   "enabledPlugins": {
     "claude-code-vendored-refs@vendored-refs": true
   }
