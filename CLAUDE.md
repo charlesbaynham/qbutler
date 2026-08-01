@@ -113,7 +113,17 @@ When a node's fix attempt fails, the real culprit is often a dependency that sti
 
 A suspect node's `_guess_own_state()` returns `BAD_EXPIRED` (return-only — the cached OK is left intact), so every walk, monitor, and client escape check re-measures it with no special-casing. Suspicion clears when (a) the node is re-measured — any fresh result supersedes doubt — or (b) a suspector records an OK check, which retracts its name from live dependencies and prunes it from every `calibrations.status` entry (so it works cross-process).
 
-The fix walks use this to backtrack: a failed attempt that newly marks suspects raises the internal `_SuspectDependencies`, and `fix_targets`/`fix_state` restart their deepest-first loop — suspect deps get re-measured, fixed if genuinely bad, and the failing node is then retried. **One backtrack per node per walk**; after that, the node retries on its own budget as usual (backtracking wins over the budget, so even `max_fix_attempts=1` gets its one chance to blame a dependency, at the cost of up to ~2n total attempts). `force=True` walks never backtrack. The DAG applet shows suspect nodes in purple with the suspector's name.
+Suspicion needs no walk machinery of its own, because the fix walk holds no plan: see *The fix walk* below. A suspect dependency stops guessing OK, so it is simply the most basic not-OK node on the next pass and gets measured then. `force=True` walks still mark suspects (for monitors and later walks) but choose their next node by "not yet fixed this walk" instead. The DAG applet shows suspect nodes in purple with the suspector's name.
+
+### The fix walk
+
+`fix_state` / `fix_targets` delegate to `_drive_dag_to_ok`, which **re-plans from scratch after every attempt**. Each pass asks the DAG for its nodes (furthest-dependency-first) and acts on the first one that is not OK; one fix attempt is made; then the question is asked again. There is no precomputed node list, no backtracking, and no limit on how often the walk may change its mind — whichever node is the most basic problem *now* is the one that runs next.
+
+This is cheap because a node inside its timeout answers `_guess_own_state()` from its cached status: only stale, failed, or suspect nodes cost a measurement, and measuring one refreshes it for later passes.
+
+`_attempt_one_fix` therefore makes exactly **one** fix + re-check and returns; retrying is the walk's decision, not the node's. A node that has just cast fresh suspicion upstream is spared its budget check once, so even `max_fix_attempts=1` gets one chance to blame a dependency before giving up.
+
+An earlier design walked a precomputed list and backtracked via an internal `_SuspectDependencies` exception, **once per node per walk**; after that a node spun in a local retry loop, re-fixing itself forever while the dependencies it kept blaming were never re-measured. That is why the scheduling rule is now "recompute every time" rather than a special case for suspicion.
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
 

@@ -310,3 +310,107 @@ def test_applet_reports_suspect_only_for_trusted_looking_entries():
     assert _node_state(bad, now)[0] == "bad"
     stale = {"status": 0, "last_check": now - 500, "timeout": 60, "suspected_by": ["X"]}
     assert _node_state(stale, now)[0] == "expired"
+
+
+def test_the_walk_keeps_re_examining_upstream_not_just_once(fragment_factory):
+    """The walk must be able to change its mind more than once.
+
+    Downstream needs three good calibration rounds, and each one leaves
+    Upstream drifted again. So the walk has to go back to Upstream, repair it,
+    and return to Downstream repeatedly. A walk that plans once and then
+    retries only the node it is on gets stuck re-fixing Downstream forever
+    against hardware it can never satisfy — which is what a live run did:
+    suspects were flagged correctly but never re-measured, and the furthest-on
+    calibration ran over and over.
+    """
+    hw = SimpleNamespace(a_good=True, b_rounds=0, a_fixes=0, b_fixes=0)
+
+    class Upstream(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+
+        def check_own_state(self):
+            return (
+                CalibrationResult.OK if hw.a_good else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            hw.a_fixes += 1
+            hw.a_good = True
+
+    class Downstream(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+            self.add_dependency(Upstream)
+            # A budget only so a regression fails the test instead of hanging
+            self.set_max_fix_attempts(12)
+
+        def check_own_state(self):
+            return (
+                CalibrationResult.OK if hw.b_rounds >= 3 else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            hw.b_fixes += 1
+            if hw.a_good:
+                hw.b_rounds += 1
+                hw.a_good = False  # calibrating Downstream drifts Upstream again
+
+    b = fragment_factory(Downstream)
+    b.Upstream.check_state()  # Upstream's OK is cached and inside its timeout
+
+    b.fix_state()
+
+    assert hw.b_rounds == 3
+    assert hw.a_fixes == 2  # went back to Upstream after each drift
+    assert b.check_state()[0] == CalibrationResult.OK
+
+
+def test_a_node_is_retried_only_after_more_basic_work_is_done(fragment_factory):
+    """Ordering: the most basic not-OK node is always the next one measured."""
+    order = []
+    hw = SimpleNamespace(a_good=True, b_good=False)
+
+    class Upstream(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+
+        def check_own_state(self):
+            order.append("check A")
+            return (
+                CalibrationResult.OK if hw.a_good else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            order.append("fix A")
+            hw.a_good = True
+
+    class Downstream(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+            self.add_dependency(Upstream)
+
+        def check_own_state(self):
+            order.append("check B")
+            return (
+                CalibrationResult.OK if hw.b_good else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            order.append("fix B")
+            hw.b_good = hw.a_good
+
+    b = fragment_factory(Downstream)
+    b.Upstream.check_state()
+    order.clear()
+    hw.a_good = False  # the silent drift
+
+    b.fix_state()
+
+    # B is attempted, fails, blames A; A is then re-measured and repaired
+    # before B is tried again — never two B attempts in a row.
+    assert "fix A" in order
+    last_fix_b = len(order) - 1 - order[::-1].index("fix B")
+    assert order.index("fix A") < last_fix_b
+    for first, second in zip(order, order[1:]):
+        assert not (first == "fix B" and second == "fix B")
