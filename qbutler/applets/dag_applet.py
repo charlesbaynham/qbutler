@@ -10,9 +10,12 @@ the per-calibration state in ``calibrations.status``:
 - grey: no status recorded
 
 qbutler launches this applet automatically the first time a calibration DAG is
-published (see :func:`qbutler.ccb.create_dag_applet`). To run it by hand:
+published (see :func:`qbutler.ccb.create_dag_applet`), one per pipeline, passing
+that pipeline's own ``calibrations.dag.<pipeline>`` key. The status table is
+shared across pipelines; only nodes present in the given DAG are drawn. To run
+it by hand:
 
-    ${python} -m qbutler.applets.dag_applet calibrations.dag calibrations.status
+    ${python} -m qbutler.applets.dag_applet calibrations.dag.main calibrations.status
 """
 
 import time

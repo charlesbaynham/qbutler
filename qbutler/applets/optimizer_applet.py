@@ -6,17 +6,17 @@ Renders the per-point trace published to ``calibrations.optimizer`` (see
 the calibration's optimizer measures is appended live, so you can watch the
 scan happen instead of only seeing the settled number.
 
-Each applet is scoped to one calibration class via ``--calibration``: qbutler
-launches one of these per class as its optimizer first runs (see
-:func:`qbutler.ccb.create_optimizer_applet`), so a DAG fix shows a separate,
-independently-namespaced plot for every node it touches. Points are coloured by
-check result — green OK, red bad — and the most recent point is ringed. For a
-single swept parameter the x-axis is the parameter value; for multi-parameter
-sweeps it is the point index.
+Each applet is scoped to one calibration class via ``--calibration``, and to one
+pipeline via the dataset key it is given: qbutler launches one of these per class
+as its optimizer first runs (see :func:`qbutler.ccb.create_optimizer_applet`), so
+a DAG fix shows a separate, independently-namespaced plot for every node it
+touches. Points are coloured by check result — green OK, red bad — and the most
+recent point is ringed. For a single swept parameter the x-axis is the parameter
+value; for multi-parameter sweeps it is the point index.
 
 Invoke with:
     ${python} -m qbutler.applets.optimizer_applet \\
-        --calibration MyCalibration calibrations.optimizer
+        --calibration MyCalibration calibrations.optimizer.main
 """
 
 import pyqtgraph as pg

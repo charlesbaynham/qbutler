@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import qbutler.calibration
+from qbutler import scoping
 from qbutler.calibration import STATUS_DATASET
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
@@ -123,7 +124,7 @@ def test_dag_published(fragment_factory, dataset_db):
     c = fragment_factory(Root)
     c.check_state()
 
-    dag = dataset_db.get(DAG_DATASET)
+    dag = dataset_db.get(scoping.scoped_key(DAG_DATASET, c))
     assert "Leaf" in dag["nodes"] and "Root" in dag["nodes"]
     assert ["Root", "Leaf"] in dag["edges"]
 
