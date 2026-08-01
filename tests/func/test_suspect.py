@@ -288,7 +288,7 @@ def test_force_never_backtracks(fragment_factory):
     marks suspects (for later readers) but the walk does not restart."""
     hw, Upstream, Downstream = make_pair(b_fixable=False, b_max_fix_attempts=2)
     b = fragment_factory(Downstream)
-    a = b.Upstream
+    b.Upstream
 
     with pytest.raises(CalibrationError, match="failed after 2 attempts"):
         b.fix_state(force=True)
