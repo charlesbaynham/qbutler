@@ -44,6 +44,22 @@ OPTIMIZER_DATASET = "calibrations.optimizer"
 #: make one per shot; in between checks the answer is taken to be "no pause".
 PAUSE_CHECK_INTERVAL = 1.0
 
+#: How many times a fix walk will try to bring a single calibration good before
+#: giving up and raising :class:`CalibrationError`. ``None`` — the default —
+#: means "never give up": a calibration that does not come good is simply fixed
+#: again, indefinitely, since a drifting physics system usually needs another
+#: attempt rather than an aborted experiment. Set this module attribute
+#: (``qbutler.calibration.DEFAULT_MAX_FIX_ATTEMPTS = 1`` restores the old
+#: fail-fast behaviour) to bound every calibration in the process, or call
+#: :meth:`Calibration.set_max_fix_attempts` to bound one of them. It is read
+#: when a fix runs, so it may be changed after the calibrations are built.
+DEFAULT_MAX_FIX_ATTEMPTS = None
+
+#: Marks a calibration that has not called :meth:`Calibration.set_max_fix_attempts`,
+#: so that its budget is read from :data:`DEFAULT_MAX_FIX_ATTEMPTS` when a fix
+#: walk actually runs (rather than being frozen at build time).
+_MAX_FIX_ATTEMPTS_UNSET = object()
+
 
 class _PauseCheckGate:
     """Wall-clock gate in front of every ``scheduler.check_pause()`` qbutler makes.
@@ -123,9 +139,12 @@ def fix_targets(targets, force=False) -> None:
         force: re-check and re-fix every node even if it looks fine.
 
     Raises:
-        CalibrationError: if a node will not come good after a fix.
+        CalibrationError: if a node will not come good within its attempt
+            budget (see :meth:`Calibration.set_max_fix_attempts`; by default
+            there is no budget and a node is retried indefinitely).
         TerminationRequested: if the run is terminated while the walk pauses
-            between nodes (see :meth:`Calibration._pause_if_requested`).
+            between nodes or between fix attempts (see
+            :meth:`Calibration._pause_if_requested`).
     """
     targets = list(targets)
     if not targets:
@@ -140,12 +159,7 @@ def fix_targets(targets, force=False) -> None:
             current_state, _ = dep._do_check_own_state()
 
         if current_state != CalibrationResult.OK or force:
-            dep._do_fix_own_state()
-            current_state, _ = dep._do_check_own_state()
-            if current_state != CalibrationResult.OK:
-                raise CalibrationError(
-                    f"Calibration of {dep.__class__.__name__} failed"
-                )
+            dep._fix_own_state_until_ok()
 
 
 def check_targets(
@@ -278,6 +292,7 @@ class Calibration(ExpFragment):
         machinery.
         """
         self.__timeout = 0
+        self.__max_fix_attempts = _MAX_FIX_ATTEMPTS_UNSET
         self.__optimizable_params = []
         self.__optimizer_func = grid_search_optimizer  # Default optimizer, can be overridden by set_optimizer()
         self.__most_recent_check_timestamp = None
@@ -541,6 +556,53 @@ class Calibration(ExpFragment):
         """
         return self.__timeout
 
+    def set_max_fix_attempts(self, attempts: Optional[int]) -> None:
+        """
+        Limit how many times a fix walk will try to bring this Calibration good
+
+        This method can only be called during the build() phase.
+
+        A fix walk fixes a Calibration and then re-checks it. If the re-check is
+        still not :any:`CalibrationResult.OK` — either because the measurement
+        says so or because the optimizer gave up — qbutler assumes the system has
+        simply drifted somewhere the last attempt could not reach, and fixes it
+        again. By default it will do so indefinitely, so a stubborn calibration
+        stalls the experiment rather than crashing it. Terminating the run still
+        stops it promptly: the retry loop yields to the ARTIQ scheduler between
+        attempts.
+
+        Call this to bound that instead, e.g. ``set_max_fix_attempts(3)`` to get
+        three tries and then a :class:`CalibrationError`, or
+        ``set_max_fix_attempts(1)`` for the fail-fast behaviour qbutler used to
+        have. Pass ``None`` to retry forever (the default).
+
+        Args:
+            attempts (Optional[int]): The maximum number of fix attempts, or
+                ``None`` for no limit. Must be at least 1 if given.
+        """
+        if not self.__in_build_calibration:
+            raise TypeError("This method must only be called in build_calibration()")
+
+        if attempts is not None:
+            attempts = int(attempts)
+            if attempts < 1:
+                raise ValueError("max_fix_attempts must be at least 1, or None")
+
+        self.__max_fix_attempts = attempts
+
+    def get_max_fix_attempts(self) -> Optional[int]:
+        """
+        Gets the fix-attempt budget set by :meth:`set_max_fix_attempts`
+
+        Returns:
+            Optional[int]: The maximum number of fix attempts, or ``None`` if
+            this Calibration is retried until it succeeds. Falls back to
+            :data:`DEFAULT_MAX_FIX_ATTEMPTS` if it was never set.
+        """
+        if self.__max_fix_attempts is _MAX_FIX_ATTEMPTS_UNSET:
+            return DEFAULT_MAX_FIX_ATTEMPTS
+        return self.__max_fix_attempts
+
     def guess_state(self) -> CalibrationResult:
         """
         Guess the status of this Calibration based on past measurements
@@ -628,8 +690,10 @@ class Calibration(ExpFragment):
 
         For any Calibrations that fail the check, or if force==True,
         :meth:`fix_own_state` will be called on each, starting from the most
-        basic. After this, :meth`check_own_state` will be called again and the
-        algorithm will either exist with an error or continue on success.
+        basic. After this, :meth`check_own_state` will be called again; if the
+        Calibration is still not OK it is simply fixed again, and again, until
+        it comes good (see :meth:`_fix_own_state_until_ok`). Bound that with
+        :meth:`set_max_fix_attempts` if you would rather the walk gave up.
 
         Args:
             force (bool, optional): Check all dependents, even if they should be
@@ -643,8 +707,13 @@ class Calibration(ExpFragment):
                 or OK.
 
         Raises:
+            CalibrationError: if a node will not come good within its attempt
+                budget — only possible once one has been set, with
+                :meth:`set_max_fix_attempts` or
+                :data:`DEFAULT_MAX_FIX_ATTEMPTS`.
             TerminationRequested: if the run is terminated while the walk
-                pauses between nodes (see :meth:`_pause_if_requested`).
+                pauses between nodes or between fix attempts (see
+                :meth:`_pause_if_requested`).
         """
         dag.publish_dag(self)
 
@@ -658,26 +727,19 @@ class Calibration(ExpFragment):
             logger.debug(f"Guessed state of {dep.__class__.__name__} = {current_state}")
 
             if current_state & CalibrationResult.BAD_EXPIRED and not force:
-                current_state, current_data = dep._do_check_own_state()
+                current_state, _ = dep._do_check_own_state()
 
             if current_state != CalibrationResult.OK or force:
-                logger.debug(f"Attempting fix of {dep.__class__.__name__}")
-
-                dep._do_fix_own_state()
-                current_state, current_data = dep._do_check_own_state()
-
-                logger.debug(
-                    "Result of fix of %s = %s", dep.__class__.__name__, current_state
-                )
-
-                if current_state != CalibrationResult.OK:
+                try:
+                    current_state, _ = dep._fix_own_state_until_ok()
+                except CalibrationError:
+                    # Only reachable when the node has a finite attempt budget:
+                    # record ourselves as broken-by-dependency before the error
+                    # unwinds, so a later guess does not trust our stale check.
                     self.__most_recent_check_result = CalibrationResult.BAD_DEPS
                     self.__most_recent_check_timestamp = time()
-                    self.__most_recent_check_data = current_data
-
-                    raise CalibrationError(
-                        f"Calibration of {dep.__class__.__name__} failed"
-                    )
+                    self.__most_recent_check_data = None
+                    raise
 
         return current_state
 
@@ -764,6 +826,77 @@ class Calibration(ExpFragment):
             pool.get(fix_own_key)()
         else:
             self.fix_own_state()
+
+    def _fix_own_state_until_ok(self) -> Tuple[CalibrationResult, Any]:
+        """Fix this node and re-check it, retrying until the check passes.
+
+        One fix attempt failing is not evidence that the calibration is
+        impossible: the system may have drifted while the optimizer swept, the
+        measurement may have been noisy, or a dependency may have settled only
+        just now. Crashing the whole experiment on the first such failure
+        surprises users, so the default is to try again — indefinitely, unless
+        :meth:`set_max_fix_attempts` (or :data:`DEFAULT_MAX_FIX_ATTEMPTS`) sets a
+        budget.
+
+        A retry is a full fix: the optimizer sweeps again from scratch, so a
+        recovering system is picked up on the next pass. Between attempts we
+        yield to the ARTIQ scheduler, so a run stuck retrying a hopeless
+        calibration can still be preempted or terminated by the user.
+
+        Errors other than :class:`CalibrationError` are *not* retried: a
+        ``NotImplementedError`` from an unwritten ``check_own_state``, or a
+        ``ValueError`` from a calibration with nothing to optimize, is a bug in
+        the calibration rather than a drifting system, and retrying it would only
+        hide it.
+
+        Returns:
+            The ``(result, data)`` of the check that finally passed.
+
+        Raises:
+            CalibrationError: if a finite attempt budget is exhausted.
+            TerminationRequested: if the run is terminated while waiting to
+                retry (see :meth:`_pause_if_requested`).
+        """
+        name = self.__class__.__name__
+        max_attempts = self.get_max_fix_attempts()
+        attempt = 0
+
+        while True:
+            attempt += 1
+            logger.debug("Attempting fix of %s (attempt %d)", name, attempt)
+
+            try:
+                self._do_fix_own_state()
+                result, data = self._do_check_own_state()
+            except CalibrationError as e:
+                # The fix gave up on its own (e.g. the optimizer found no point
+                # that checked out). Same failure as a bad re-check, so it gets
+                # the same treatment: record the node as broken and try again.
+                reason = str(e)
+                result, data = CalibrationResult.BAD_DATA, None
+                self._record_own_check(result, data)
+            else:
+                logger.debug("Result of fix of %s = %s", name, result)
+                if result == CalibrationResult.OK:
+                    return result, data
+                reason = f"check returned {result!s}"
+
+            if max_attempts is not None and attempt >= max_attempts:
+                raise CalibrationError(
+                    f"Calibration of {name} failed after "
+                    f"{attempt} attempt{'' if attempt == 1 else 's'}: {reason}"
+                )
+
+            logger.warning(
+                "Calibration of %s did not succeed (%s); retrying (attempt %d%s)",
+                name,
+                reason,
+                attempt + 1,
+                f" of {max_attempts}" if max_attempts is not None else "",
+            )
+            # Yield before the next sweep, so an experiment stuck on a
+            # calibration that never comes good can still be interrupted.
+            self._pause_if_requested()
 
     def _pause_if_requested(self) -> None:
         """Yield to the ARTIQ scheduler between shots, if it wants us to.
@@ -1004,7 +1137,10 @@ class Calibration(ExpFragment):
 
         Raises:
             CalibrationError:
-                Raised if the algorithm fails to fix this Calibration.
+                Raised if the algorithm fails to fix this Calibration. A fix
+                walk treats this as "not fixed yet" and calls this method again
+                (see :meth:`_fix_own_state_until_ok`), so raising it is not
+                fatal unless the Calibration has a finite attempt budget.
         """
 
         if len(self.__optimizable_params) == 0:
