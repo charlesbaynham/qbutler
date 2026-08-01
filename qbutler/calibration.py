@@ -12,11 +12,14 @@ from typing import Tuple
 from typing import Type
 
 from artiq.experiment import TFloat
+from artiq.experiment import TInt32
 from artiq.experiment import TList
 from artiq.experiment import kernel
 from artiq.experiment import rpc
 from ndscan.experiment import ExpFragment
 from ndscan.experiment import OpaqueChannel
+from ndscan.experiment.fragment import RestartKernelTransitoryError
+from ndscan.experiment.fragment import TransitoryError
 from ndscan.experiment.parameters import FloatParam
 from ndscan.experiment.parameters import ParamHandle
 from ndscan.experiment.parameters import StringParam
@@ -89,6 +92,13 @@ CHECK_CONTEXT_VERIFY = "verify"
 #: Not a measurement at all: the synthetic BAD_DATA recorded when a fix gave up
 #: with a :class:`CalibrationError` before it could measure anything.
 CHECK_CONTEXT_FIX_FAILED = "fix_failed"
+
+#: How many ndscan :class:`~ndscan.experiment.fragment.TransitoryError`\ s a
+#: single measurement may raise before the walk gives up on it. A transitory
+#: error means the apparatus is fine and the shot just needs taking again, so
+#: the measurement is simply repeated; see
+#: :meth:`Calibration._measure_with_transitory_retries`.
+DEFAULT_MAX_TRANSITORY_ERROR_RETRIES = 10
 
 
 class _PauseCheckGate:
@@ -439,6 +449,7 @@ class Calibration(ExpFragment):
         self.__most_recent_check_result = None
         self.__most_recent_check_data = None
         self.__optimization_type = "max"
+        self.max_transitory_error_retries = DEFAULT_MAX_TRANSITORY_ERROR_RETRIES
         # Class names of dependents whose fix conclusively failed while this
         # node looked good. Non-empty means SUSPECT: the cached OK is not
         # trusted and this node is re-measured despite its timeout. This is
@@ -1055,11 +1066,66 @@ class Calibration(ExpFragment):
         self._activate()
         pool = getattr(self, "_precompile_pool", None)
         check_key = getattr(self, "_precompile_check_key", None)
-        if pool is not None and check_key is not None:
-            result, data = pool.get(check_key)()
-        else:
-            result, data = self.check_own_state()
+        num_transitory = 0
+        while True:
+            try:
+                if pool is not None and check_key is not None:
+                    result, data = pool.get(check_key)()
+                else:
+                    result, data = self.check_own_state()
+                break
+            except RestartKernelTransitoryError:
+                raise
+            except TransitoryError:
+                if num_transitory >= self.max_transitory_error_retries:
+                    raise
+                num_transitory += 1
+                self._report_transitory_retry(num_transitory)
         self._record_own_check(result, data)
+        return result, data
+
+    @rpc(flags={"async"})
+    def _report_transitory_retry(self, attempt: TInt32) -> None:
+        """Report a repeated measurement. Async so the kernel-side retry loop
+        pays no slack for it."""
+        logger.warning(
+            "%s: transitory error while measuring, repeating the shot (%d/%d)",
+            self.__class__.__name__,
+            attempt,
+            self.max_transitory_error_retries,
+        )
+
+    @kernel
+    def _measure_with_transitory_retries(self):
+        """One :meth:`check_own_state`, repeated on transitory errors only.
+
+        A :class:`~ndscan.experiment.fragment.TransitoryError` means the
+        apparatus is fine and this particular shot just needs taking again, so
+        the measurement is simply repeated (up to
+        :attr:`max_transitory_error_retries`).
+
+        ``RTIOUnderflow`` is deliberately NOT caught here. An underflow is a
+        real timing failure and must surface: only the fragment that raised it
+        is in a position to judge it benign, and the way to say so is to
+        convert it to a ``TransitoryError`` at that point.
+        ``RestartKernelTransitoryError`` is also not repeated — nothing inside
+        a resident kernel loop can restart the kernel — so it propagates to the
+        client.
+        """
+        num_transitory = 0
+        result = CalibrationResult.OK
+        data = 0.0
+        while True:
+            try:
+                result, data = self.check_own_state()
+                break
+            except RestartKernelTransitoryError:
+                raise
+            except TransitoryError:
+                if num_transitory >= self.max_transitory_error_retries:
+                    raise
+                num_transitory += 1
+                self._report_transitory_retry(num_transitory)
         return result, data
 
     def _do_fix_own_state(self) -> None:
@@ -1938,14 +2004,14 @@ class Calibration(ExpFragment):
         while len(values) > 0:
             for i in range(len(self._kopt_stores)):
                 self._kopt_stores[i].set_value(values[i])
-            result, data = self.check_own_state()
+            result, data = self._measure_with_transitory_retries()
             values = self._kopt_next_point(result, data)
 
         values = self._kopt_get_best()
         if len(values) > 0:
             for i in range(len(self._kopt_stores)):
                 self._kopt_stores[i].set_value(values[i])
-            result, data = self.check_own_state()
+            result, data = self._measure_with_transitory_retries()
             self._kopt_record_verify(result, data)
 
     def _is_better(self, data: Any, best_data: Optional[Any]) -> bool:
