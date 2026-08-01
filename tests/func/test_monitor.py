@@ -129,3 +129,49 @@ def test_monitor_logs_to_db(build_experiment, mock_core, mock_db_writer):
 
     assert "simple" in db_called_names
     assert "random" in db_called_names
+
+
+def test_monitors_share_one_tree(experiment_factory):
+    """The controller is ONE calibration tree: monitors declaring a shared
+    dependency share one instance of it (per-tree dedup), and any monitor's
+    publish_dag publishes the whole fleet's graph, not a private one-node
+    tree that would make the DAG dataset thrash between monitors."""
+    from qbutler import dag
+    from qbutler.calibration import Calibration
+
+    class SharedSensorCal(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+
+        def check_own_state(self):
+            return CalibrationResult.OK, None
+
+    class MonitorA(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+            self.add_dependency(SharedSensorCal)
+
+        def check_own_state(self):
+            return CalibrationResult.OK, None
+
+    class MonitorB(Calibration):
+        def build_calibration(self):
+            self.set_timeout(60)
+            self.add_dependency(SharedSensorCal)
+
+        def check_own_state(self):
+            return CalibrationResult.OK, None
+
+    Controller = make_monitor_controller(
+        "SharedDepController", monitors={"mon_a": MonitorA, "mon_b": MonitorB}
+    )
+    exp = experiment_factory(Controller)
+    controller = exp.fragment
+
+    a = controller._monitors["mon_a"]
+    b = controller._monitors["mon_b"]
+
+    assert a.SharedSensorCal is b.SharedSensorCal  # deduped, one instrument
+    assert dag.get_graph(a) is dag.get_graph(b)  # one registry for the fleet
+    # The published view from either monitor covers all four nodes
+    assert len(dag.get_graph(a)) == 3

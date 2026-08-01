@@ -57,14 +57,16 @@ class DagRegistry:
         #: dependency None); add_dependency records the real edges.
         self.edges = []
         self._graph = None
-        # Walks may run while monitor threads read the same tree; the graph
-        # cache is built lazily, so its construction is the one mutation that
-        # can race after build time.
+        # A monitor controller's checks read this tree from executor threads
+        # while the main thread walks it; the lock covers both the lazy cache
+        # build and (should a build ever overlap a read) record's
+        # invalidation, so a racing reader cannot resurrect a stale graph.
         self._graph_lock = threading.Lock()
 
     def record(self, cal_object, dependent_cal_object) -> None:
-        self.edges.append((cal_object, dependent_cal_object))
-        self._graph = None
+        with self._graph_lock:
+            self.edges.append((cal_object, dependent_cal_object))
+            self._graph = None
 
     def graph(self) -> nx.DiGraph:
         """The tree's dependency graph; nodes are the Calibration objects
@@ -92,8 +94,14 @@ class DagRegistry:
 
 #: The registry of the build currently in progress, if any. Set by
 #: :func:`building`; the outermost scope creates it, nested scopes share it.
+#: Deliberately not thread-local: builds are single-threaded (the ARTIQ
+#: worker builds experiments on its main thread), and a *concurrent* build
+#: entering the scope would otherwise silently weld two trees onto one
+#: registry — so :func:`building` checks the owning thread and fails loudly
+#: instead.
 _scope_registry = None
 _scope_depth = 0
+_scope_thread = None
 
 
 @contextmanager
@@ -114,10 +122,17 @@ def building():
     experiments get this from the shim, which wraps the whole experiment
     build.
     """
-    global _scope_registry, _scope_depth
+    global _scope_registry, _scope_depth, _scope_thread
 
     if _scope_depth == 0:
         _scope_registry = DagRegistry()
+        _scope_thread = threading.get_ident()
+    elif _scope_thread != threading.get_ident():
+        raise RuntimeError(
+            "A calibration tree is already being built on another thread; "
+            "concurrent builds would silently share one registry, so they "
+            "are not allowed"
+        )
     _scope_depth += 1
     try:
         yield _scope_registry
@@ -125,6 +140,7 @@ def building():
         _scope_depth -= 1
         if _scope_depth == 0:
             _scope_registry = None
+            _scope_thread = None
 
 
 def _registry_of(obj) -> DagRegistry:
@@ -168,7 +184,10 @@ def add_to_dependency_map(cal_object, dependent_cal_object) -> None:
     registered donates its registry, and a fresh one is created when neither
     is.
     """
-    if _scope_registry is not None:
+    # The active scope belongs to the thread that opened it; a registration
+    # arriving from any other thread is a different piece of work and gets
+    # the object-keyed treatment instead of welding onto this build's tree.
+    if _scope_registry is not None and _scope_thread == threading.get_ident():
         registry = _scope_registry
     else:
         registry = getattr(cal_object, _REGISTRY_ATTR, None)
@@ -262,6 +281,8 @@ def get_union_dependencies(targets, furthest_first=True) -> List:
         List: the deduplicated calibration objects, furthest dependency first.
     """
     targets = list(targets)
+    if not targets:
+        return []
     registries = {id(_registry_of(t)): _registry_of(t) for t in targets}
     if len(registries) > 1:
         raise RuntimeError(
@@ -288,10 +309,10 @@ def get_calibrations_of_type(obj_type: Type["Calibration"]) -> List["Calibration
         RuntimeError: if called outside a :func:`building` scope — there is
             then no tree for the question to be about.
     """
-    if _scope_registry is None:
+    if _scope_registry is None or _scope_thread != threading.get_ident():
         raise RuntimeError(
             "get_calibrations_of_type() is only meaningful during a tree "
-            "build (inside a dag.building() scope)"
+            "build (inside a dag.building() scope, on the building thread)"
         )
     return _scope_registry.calibrations_of_type(obj_type)
 

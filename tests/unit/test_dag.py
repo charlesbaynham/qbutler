@@ -414,3 +414,34 @@ def test_nested_building_scopes_share_one_registry():
     # Fully unwound: the next scope is a fresh tree
     with dag.building() as fresh:
         assert fresh is not outer
+
+
+def test_union_of_no_targets_is_empty():
+    assert get_union_dependencies([]) == []
+
+
+def test_building_on_a_second_thread_raises():
+    """A concurrent build must fail loudly, not silently share the registry."""
+    import threading
+
+    result = {}
+
+    def other_thread():
+        try:
+            with dag.building():
+                result["registry"] = "entered"
+        except RuntimeError as e:
+            result["error"] = str(e)
+
+    with dag.building():
+        t = threading.Thread(target=other_thread)
+        t.start()
+        t.join()
+
+    assert "error" in result and "another thread" in result["error"]
+    assert "registry" not in result
+    # And the scope is intact for this thread afterwards
+    with dag.building():
+        c = DummyCal("after")
+        add_to_dependency_map(c, None)
+        assert dag.get_calibrations_of_type(DummyCal) == [c]
