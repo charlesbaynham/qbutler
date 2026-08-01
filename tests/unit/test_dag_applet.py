@@ -6,8 +6,10 @@ ordered to avoid needless edge crossings, and the graph is drawn at natural
 size rather than stretched to fill the widget.
 """
 
-import argparse
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -106,32 +108,53 @@ def test_node_label_handles_non_numeric_data():
     assert lines == ["MyCal", "OK", "[1, 2]", "5 s ago"]
 
 
-def test_widget_renders_offscreen():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    QtWidgets = pytest.importorskip("PyQt5.QtWidgets")
-    from qbutler.applets.dag_applet import QbutlerDAGWidget
+RENDER_SCRIPT = """
+import argparse
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    assert app is not None
+from PyQt5 import QtWidgets
 
-    widget = QbutlerDAGWidget(argparse.Namespace(dag="dag", status="status"), None)
-    widget.resize(1107, 327)
-    widget.data_changed(
-        {
-            "dag": {
-                "nodes": ["A", "B", "C", "D"],
-                "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"]],
-            },
-            "status": {"A": {"status": 0, "last_check": 0, "timeout": 60}},
+from qbutler.applets.dag_applet import QbutlerDAGWidget
+
+app = QtWidgets.QApplication([])
+widget = QbutlerDAGWidget(argparse.Namespace(dag="dag", status="status"), None)
+widget.resize(1107, 327)
+widget.data_changed(
+    {
+        "dag": {
+            "nodes": ["A", "B", "C", "D"],
+            "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"]],
         },
-        {},
-        {},
-        [],
-        "Calibration DAG",
-    )
-    pixmap = widget.grab()
-    assert not pixmap.isNull()
+        "status": {"A": {"status": 0, "last_check": 0, "timeout": 60}},
+    },
+    {},
+    {},
+    [],
+    "Calibration DAG",
+)
+assert not widget.grab().isNull()
 
-    # The empty state must render too.
-    widget.data_changed({"dag": None, "status": {}}, {}, {}, [], None)
-    assert not widget.grab().isNull()
+# The empty state must render too.
+widget.data_changed({"dag": None, "status": {}}, {}, {}, [], None)
+assert not widget.grab().isNull()
+print("rendered")
+"""
+
+
+def test_widget_renders_offscreen():
+    # A subprocess, because Qt turns an unusable platform into a qFatal
+    # abort that would take the whole pytest run down with it.
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(__file__).parents[2]), env.get("PYTHONPATH", "")]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", RENDER_SCRIPT],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0 and "platform plugin" in result.stderr:
+        pytest.skip(f"Qt offscreen platform unavailable: {result.stderr.strip()}")
+    assert result.returncode == 0, result.stderr
+    assert "rendered" in result.stdout
