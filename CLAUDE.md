@@ -101,7 +101,13 @@ A fix walk fixes a node and re-checks it; if the re-check is still not OK — or
 
 Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc. is a bug in the calibration and propagates immediately. The loop yields to the scheduler between attempts, so a run stuck on a hopeless calibration can still be terminated.
 
-### Timeout behaviour
+### SUSPECT: distrusting in-timeout OKs
+
+When a node's fix attempt fails, the real culprit is often a dependency that still *looks* good — checked recently, inside its timeout — but has silently drifted. Each such dependency is marked **suspect**: the dependent's class name is added to its `suspected_by` set (persisted in `calibrations.status`, restored by `_recall_status`). SUSPECT is deliberately **not** a `CalibrationResult` member — a check can't *measure* "suspect"; it is trust metadata, and `check_own_state` can never return it.
+
+A suspect node's `_guess_own_state()` returns `BAD_EXPIRED` (return-only — the cached OK is left intact), so every walk, monitor, and client escape check re-measures it with no special-casing. Suspicion clears when (a) the node is re-measured — any fresh result supersedes doubt — or (b) a suspector records an OK check, which retracts its name from live dependencies and prunes it from every `calibrations.status` entry (so it works cross-process).
+
+The fix walks use this to backtrack: a failed attempt that newly marks suspects raises the internal `_SuspectDependencies`, and `fix_targets`/`fix_state` restart their deepest-first loop — suspect deps get re-measured, fixed if genuinely bad, and the failing node is then retried. **One backtrack per node per walk**; after that, the node retries on its own budget as usual (backtracking wins over the budget, so even `max_fix_attempts=1` gets its one chance to blame a dependency, at the cost of up to ~2n total attempts). `force=True` walks never backtrack. The DAG applet shows suspect nodes in purple with the suspector's name.
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
 

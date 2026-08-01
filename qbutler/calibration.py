@@ -169,6 +169,20 @@ class CalibrationEscape(Exception):
     """
 
 
+class _SuspectDependencies(Exception):
+    """Control flow only, never user-facing: a fix attempt failed and cast
+    suspicion on dependencies that still looked good, so the walk should
+    restart from the deepest dependency and re-examine them before retrying
+    this node. Carries the node whose fix failed. Deliberately not a
+    :class:`CalibrationError` subclass, so nothing that handles calibration
+    failures can swallow it by accident.
+    """
+
+    def __init__(self, node: "Calibration"):
+        super().__init__(f"Dependencies of {node.__class__.__name__} are now suspect")
+        self.node = node
+
+
 class CalibrationResult(int, Flag):
     OK = 0
 
@@ -190,6 +204,13 @@ def fix_targets(targets, force=False) -> None:
     leaf is fixed. Node ordering, the per-node guess/check/fix/re-check and the
     pooled-kernel dispatch are identical to the single-target walk.
 
+    If a node's fix attempt fails while dependencies of it still look good,
+    those dependencies become suspect and the walk backtracks: it restarts
+    from the deepest dependency, re-measures the suspects despite their
+    timeouts, fixes any found genuinely bad, and then retries the failing
+    node — once per node per walk (see
+    :meth:`Calibration._fix_own_state_until_ok`).
+
     Args:
         targets: the leaf calibrations to maintain (a client's
             ``calibration_targets``). Empty is a no-op.
@@ -210,14 +231,28 @@ def fix_targets(targets, force=False) -> None:
         dag.publish_dag(target)
 
     try:
-        for dep in dag.get_union_dependencies(targets):
-            dep._pause_if_requested()
-            current_state = dep._guess_own_state()
-            if current_state & CalibrationResult.BAD_EXPIRED and not force:
-                current_state, _ = dep._do_check_own_state()
+        backtracked = set()
+        while True:
+            try:
+                for dep in dag.get_union_dependencies(targets):
+                    dep._pause_if_requested()
+                    current_state = dep._guess_own_state()
+                    if current_state & CalibrationResult.BAD_EXPIRED and not force:
+                        current_state, _ = dep._do_check_own_state()
 
-            if current_state != CalibrationResult.OK or force:
-                dep._fix_own_state_until_ok()
+                    if current_state != CalibrationResult.OK or force:
+                        dep._fix_own_state_until_ok(
+                            allow_backtrack=not force and dep not in backtracked
+                        )
+                break
+            except _SuspectDependencies as e:
+                # A node's fix failed and its dependencies looked good, so they
+                # are now suspect. Restart the walk from the deepest dependency:
+                # suspect nodes no longer guess OK, so they get re-measured (and
+                # fixed, if the measurement says so) before this node is retried.
+                # Each node gets one such backtrack per walk; after that it is
+                # retried on its own budget as usual.
+                backtracked.add(e.node)
     finally:
         deactivate_active_calibration()
 
@@ -253,6 +288,44 @@ def check_targets(
         return r, data
     finally:
         deactivate_active_calibration()
+
+
+def _suspect_dependencies_of(failed: "Calibration") -> bool:
+    """Cast suspicion on the dependencies of a calibration whose fix failed.
+
+    If a node cannot be brought good, the likeliest physical explanation is
+    often a dependency that still *looks* good — its last check passed and its
+    timeout has not expired — but has actually drifted. Every such dependency
+    is marked suspect (see :meth:`Calibration._add_suspicion`), which makes it
+    a candidate for re-measurement despite its timeout.
+
+    Dependencies that already guess bad (expired, failed, or already suspect)
+    are left alone: the ordinary walk logic re-examines those anyway.
+
+    Best-effort: a DAG hiccup must not be able to break a fix walk.
+
+    Returns:
+        True if at least one dependency was newly marked suspect.
+    """
+    name = failed.__class__.__name__
+    try:
+        deps = dag.get_dependencies(failed)
+    except Exception:
+        logger.warning(
+            "Could not walk dependencies of %s to mark suspects", name, exc_info=True
+        )
+        return False
+
+    newly_marked = False
+    for dep in deps:
+        if dep is failed:
+            continue
+        # Only a dependency that currently guesses OK can be *newly* suspect —
+        # an already-suspect one guesses BAD_EXPIRED and is skipped here.
+        if dep._guess_own_state() == CalibrationResult.OK:
+            dep._add_suspicion(name)
+            newly_marked = True
+    return newly_marked
 
 
 class Calibration(ExpFragment):
@@ -366,6 +439,12 @@ class Calibration(ExpFragment):
         self.__most_recent_check_result = None
         self.__most_recent_check_data = None
         self.__optimization_type = "max"
+        # Class names of dependents whose fix conclusively failed while this
+        # node looked good. Non-empty means SUSPECT: the cached OK is not
+        # trusted and this node is re-measured despite its timeout. This is
+        # trust metadata, deliberately kept out of CalibrationResult — a check
+        # can never *measure* "suspect".
+        self.__suspected_by = set()
 
         # Resolved once, here, rather than per shot: the scheduler is a virtual
         # device, but the fix loops consult it in their innermost loop. None
@@ -648,6 +727,14 @@ class Calibration(ExpFragment):
         ``set_max_fix_attempts(1)`` for the fail-fast behaviour qbutler used to
         have. Pass ``None`` to retry forever (the default).
 
+        One nuance: a failed attempt that makes dependencies suspect triggers
+        a backtrack — the walk re-verifies those dependencies and then retries
+        this node with a fresh budget — before the budget can abort anything.
+        That happens at most once per node per walk, so a budget of ``n``
+        allows up to roughly ``2n`` attempts in total, and even
+        ``set_max_fix_attempts(1)`` gets its one chance to blame a dependency
+        before failing.
+
         Args:
             attempts (Optional[int]): The maximum number of fix attempts, or
                 ``None`` for no limit. Must be at least 1 if given.
@@ -770,6 +857,11 @@ class Calibration(ExpFragment):
         it comes good (see :meth:`_fix_own_state_until_ok`). Bound that with
         :meth:`set_max_fix_attempts` if you would rather the walk gave up.
 
+        A failed fix attempt also casts suspicion on the failing node's
+        dependencies that still look good: the walk backtracks (once per node
+        per walk), re-measuring the suspects despite their timeouts and fixing
+        any found genuinely bad, before the failing node is retried.
+
         Args:
             force (bool, optional): Check all dependents, even if they should be
                                     fine. Defaults to False.
@@ -792,34 +884,52 @@ class Calibration(ExpFragment):
         """
         dag.publish_dag(self)
 
-        # Iterate over the dependencies, starting with the ones furthest away,
-        # and check their states, ending with this object
-        deps = dag.get_dependencies(self)
         logger.debug(f"Fixing all dependencies of {self.__class__.__name__}")
         try:
-            for dep in deps:
-                dep._pause_if_requested()
-                current_state = dep._guess_own_state()
-                logger.debug(
-                    f"Guessed state of {dep.__class__.__name__} = {current_state}"
-                )
+            backtracked = set()
+            while True:
+                try:
+                    # Iterate over the dependencies, starting with the ones
+                    # furthest away, and check their states, ending with this
+                    # object
+                    for dep in dag.get_dependencies(self):
+                        dep._pause_if_requested()
+                        current_state = dep._guess_own_state()
+                        logger.debug(
+                            f"Guessed state of {dep.__class__.__name__} = {current_state}"
+                        )
 
-                if current_state & CalibrationResult.BAD_EXPIRED and not force:
-                    current_state, _ = dep._do_check_own_state()
+                        if current_state & CalibrationResult.BAD_EXPIRED and not force:
+                            current_state, _ = dep._do_check_own_state()
 
-                if current_state != CalibrationResult.OK or force:
-                    try:
-                        current_state, _ = dep._fix_own_state_until_ok()
-                    except CalibrationError:
-                        # Only reachable when the node has a finite attempt budget:
-                        # record ourselves as broken-by-dependency before the error
-                        # unwinds, so a later guess does not trust our stale check.
-                        self.__most_recent_check_result = CalibrationResult.BAD_DEPS
-                        self.__most_recent_check_timestamp = time()
-                        self.__most_recent_check_data = None
-                        raise
+                        if current_state != CalibrationResult.OK or force:
+                            try:
+                                current_state, _ = dep._fix_own_state_until_ok(
+                                    allow_backtrack=not force and dep not in backtracked
+                                )
+                            except CalibrationError:
+                                # Only reachable when the node has a finite
+                                # attempt budget: record ourselves as
+                                # broken-by-dependency before the error unwinds,
+                                # so a later guess does not trust our stale
+                                # check.
+                                self.__most_recent_check_result = (
+                                    CalibrationResult.BAD_DEPS
+                                )
+                                self.__most_recent_check_timestamp = time()
+                                self.__most_recent_check_data = None
+                                raise
 
-            return current_state
+                    return current_state
+                except _SuspectDependencies as e:
+                    # A node's fix failed and its dependencies looked good, so
+                    # they are now suspect. Restart the walk from the deepest
+                    # dependency: suspect nodes no longer guess OK, so they get
+                    # re-measured (and fixed, if the measurement says so) before
+                    # this node is retried. Each node gets one such backtrack
+                    # per walk; after that it is retried on its own budget as
+                    # usual.
+                    backtracked.add(e.node)
         finally:
             deactivate_active_calibration()
 
@@ -968,7 +1078,9 @@ class Calibration(ExpFragment):
         else:
             self.fix_own_state()
 
-    def _fix_own_state_until_ok(self) -> Tuple[CalibrationResult, Any]:
+    def _fix_own_state_until_ok(
+        self, allow_backtrack: bool = True
+    ) -> Tuple[CalibrationResult, Any]:
         """Fix this node and re-check it, retrying until the check passes.
 
         One fix attempt failing is not evidence that the calibration is
@@ -978,6 +1090,18 @@ class Calibration(ExpFragment):
         surprises users, so the default is to try again — indefinitely, unless
         :meth:`set_max_fix_attempts` (or :data:`DEFAULT_MAX_FIX_ATTEMPTS`) sets a
         budget.
+
+        A failed attempt also casts suspicion upstream: every dependency that
+        still looks good is marked suspect (see
+        :func:`_suspect_dependencies_of`), because a fix that will not take is
+        often the fault of an input that has silently drifted inside its
+        timeout. If ``allow_backtrack`` is True and anything was newly marked,
+        :class:`_SuspectDependencies` is raised instead of retrying here, so
+        the calling walk can re-examine those dependencies first and only then
+        retry this node. With ``allow_backtrack=False`` (the walk has already
+        backtracked for this node, or is running with ``force``) the marks are
+        still made — monitors and later walks see them — but the retry loop
+        carries on locally.
 
         A retry is a full fix: the optimizer sweeps again from scratch, so a
         recovering system is picked up on the next pass. Between attempts we
@@ -995,6 +1119,8 @@ class Calibration(ExpFragment):
 
         Raises:
             CalibrationError: if a finite attempt budget is exhausted.
+            _SuspectDependencies: if this attempt made dependencies suspect and
+                ``allow_backtrack`` is True.
             TerminationRequested: if the run is terminated while waiting to
                 retry (see :meth:`_pause_if_requested`).
         """
@@ -1022,6 +1148,26 @@ class Calibration(ExpFragment):
                 if result == CalibrationResult.OK:
                     return result, data
                 reason = f"check returned {result!s}"
+
+            # This attempt failed, which casts doubt on every dependency that
+            # still looks good: one of them may be the real problem. Mark them
+            # before deciding what to do next, so the suspicion is published
+            # even if we give up below.
+            newly_suspect = _suspect_dependencies_of(self)
+
+            # Backtracking wins over giving up: even a fail-fast calibration
+            # (max_fix_attempts=1) deserves its one chance to blame a
+            # dependency. Only when the walk has already backtracked for this
+            # node does an exhausted budget abort.
+            if allow_backtrack and newly_suspect:
+                logger.warning(
+                    "Calibration of %s did not succeed (%s); its dependencies "
+                    "are now suspect and will be re-examined before it is "
+                    "retried",
+                    name,
+                    reason,
+                )
+                raise _SuspectDependencies(self)
 
             if max_attempts is not None and attempt >= max_attempts:
                 raise CalibrationError(
@@ -1108,9 +1254,29 @@ class Calibration(ExpFragment):
     def _record_own_check(self, result: CalibrationResult, data) -> None:
         """Record + publish a check outcome, whether measured on the host or
         reported back from a kernel."""
+        # A fresh measurement supersedes any suspicion cast on this node: if it
+        # measured OK the doubt is answered, and if it measured bad the node is
+        # genuinely broken and the ordinary fix path takes over.
+        self.__suspected_by.clear()
+
         self.__most_recent_check_result = result
         self.__most_recent_check_data = data
         self.__most_recent_check_timestamp = time()
+
+        if result == CalibrationResult.OK:
+            # This node coming good also answers the suspicion *it* cast on its
+            # own dependencies: whatever was wrong evidently was not them.
+            # Their still-in-timeout OKs become trusted again, unmeasured.
+            name = self.__class__.__name__
+            try:
+                for dep in dag.get_dependencies(self):
+                    if dep is not self:
+                        dep._retract_suspicion(name)
+            except Exception:
+                # Not in any DAG (e.g. a bare fragment in a unit test), or a
+                # graph hiccup — the dataset prune in _publish_status still
+                # clears the suspicion for anyone reading it.
+                logger.debug("Could not retract suspicions", exc_info=True)
 
         logger.debug(
             "Checked own state of %s: result %s/%s at time %s",
@@ -1137,12 +1303,27 @@ class Calibration(ExpFragment):
             if not isinstance(table, dict):
                 table = {}
             data = self.__most_recent_check_data
-            table[self.__class__.__name__] = {
+            name = self.__class__.__name__
+            table[name] = {
                 "status": int(self.__most_recent_check_result),
                 "last_check": self.__most_recent_check_timestamp,
                 "timeout": self.__timeout,
                 "data": float(data) if isinstance(data, (int, float)) else None,
+                "suspected_by": sorted(self.__suspected_by),
             }
+            if self.__most_recent_check_result == CalibrationResult.OK:
+                # This node coming good retracts the suspicion it cast, even on
+                # nodes not instantiated in this process: prune our name from
+                # every other entry before the single write.
+                for other, entry in table.items():
+                    if (
+                        other != name
+                        and isinstance(entry, dict)
+                        and name in entry.get("suspected_by", [])
+                    ):
+                        entry["suspected_by"] = [
+                            s for s in entry["suspected_by"] if s != name
+                        ]
             self.set_dataset(
                 STATUS_DATASET, table, broadcast=True, persist=True, archive=False
             )
@@ -1283,6 +1464,46 @@ class Calibration(ExpFragment):
         finally:
             self._check_context = previous
 
+    def _add_suspicion(self, suspector: str) -> None:
+        """Mark this node suspect: ``suspector``'s fix failed while this node
+        looked good, so the cached OK is no longer trusted and the next walk or
+        monitor pass re-measures this node despite its timeout. Idempotent."""
+        if suspector in self.__suspected_by:
+            return
+        self.__suspected_by.add(suspector)
+        logger.warning(
+            "%s is now SUSPECT: %s failed to calibrate while it looked good",
+            self.__class__.__name__,
+            suspector,
+        )
+        self._publish_status()
+
+    def _retract_suspicion(self, suspector: str) -> None:
+        """Withdraw ``suspector``'s suspicion of this node (it came good, so
+        this node evidently was not its problem). The still-in-timeout cached
+        OK becomes trusted again once no suspicions remain. No dataset write:
+        the suspector's own :meth:`_publish_status` prunes the table."""
+        if suspector not in self.__suspected_by:
+            return
+        self.__suspected_by.discard(suspector)
+        logger.info(
+            "%s is no longer suspected by %s%s",
+            self.__class__.__name__,
+            suspector,
+            (
+                ""
+                if not self.__suspected_by
+                else f" (still suspected by {sorted(self.__suspected_by)})"
+            ),
+        )
+
+    def is_suspect(self) -> bool:
+        """Whether this Calibration is currently SUSPECT: a dependent's fix
+        conclusively failed while this node's cached check looked good, so the
+        cached OK is not trusted until this node is re-measured or the
+        dependent comes good."""
+        return bool(self.__suspected_by)
+
     def _recall_status(self) -> bool:
         """Hydrate check state from :data:`STATUS_DATASET` (a previous worker
         process may have checked this calibration). Returns True on success."""
@@ -1295,6 +1516,8 @@ class Calibration(ExpFragment):
             # pyon round-trips CalibrationResult as a string of its int value
             self.__most_recent_check_result = CalibrationResult(int(entry["status"]))
             self.__most_recent_check_timestamp = float(entry["last_check"])
+            # Entries written before suspicion existed have no key: not suspect
+            self.__suspected_by = set(entry.get("suspected_by", []))
             return True
         except Exception:
             logger.debug("Could not recall calibration status", exc_info=True)
@@ -1321,6 +1544,21 @@ class Calibration(ExpFragment):
                 self.__timeout,
             )
             self.__most_recent_check_result = CalibrationResult.BAD_EXPIRED
+
+        if (
+            self.__most_recent_check_result == CalibrationResult.OK
+            and self.__suspected_by
+        ):
+            # The cached OK is within its timeout but a dependent's fix failed,
+            # so it is no longer trusted. Return-only — the cached result is
+            # left intact, so if the suspicion is retracted without a
+            # measurement (the dependent came good) the OK is trusted again.
+            logger.debug(
+                "Guess own state of %s: cached OK not trusted, suspected by %s",
+                self.__class__.__name__,
+                sorted(self.__suspected_by),
+            )
+            return CalibrationResult.BAD_EXPIRED
 
         return self.__most_recent_check_result
 
