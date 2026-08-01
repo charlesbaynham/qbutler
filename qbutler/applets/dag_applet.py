@@ -9,6 +9,14 @@ the per-calibration state in ``calibrations.status``:
 - red: last check returned a BAD flag
 - grey: no status recorded
 
+Nodes are layered by dependency depth (dependents above their dependencies),
+ordered within each layer to reduce edge crossings, and spaced by the pixel
+size of their labels so nothing overlaps. Nodes with no edges at all — e.g. a
+monitor pipeline of dozens of independent calibrations — are wrapped into a
+grid shaped to the widget instead of one endless line. The graph is drawn at
+its natural size, centred in the widget — it is scaled down uniformly if it
+does not fit, but never stretched to fill.
+
 qbutler launches this applet automatically the first time a calibration DAG is
 published (see :func:`qbutler.ccb.create_dag_applet`), one per pipeline, passing
 that pipeline's own ``calibrations.dag.<pipeline>`` key. The status table is
@@ -20,9 +28,10 @@ it by hand:
 
 import time
 
-import pyqtgraph as pg
 from artiq.applets.simple import TitleApplet
-from PyQt5.QtCore import QTimer
+from PyQt5 import QtCore
+from PyQt5 import QtGui
+from PyQt5 import QtWidgets
 
 STATE_COLOURS = {
     "ok": (60, 180, 75),
@@ -30,6 +39,21 @@ STATE_COLOURS = {
     "expired": (255, 160, 0),
     "unknown": (130, 130, 130),
 }
+
+BACKGROUND_COLOUR = (0, 0, 0)
+TEXT_COLOUR = (220, 220, 220)
+EDGE_COLOUR = (120, 120, 120)
+
+#: Node circle diameter, px
+NODE_SIZE = 38
+#: Minimum horizontal clearance between neighbouring labels, px
+H_GAP = 28
+#: Vertical clearance between one row's labels and the next row's nodes, px
+V_GAP = 30
+#: Gap between a node circle and the first line of its label, px
+LABEL_OFFSET = 6
+#: Padding around the whole drawing, px
+MARGIN = 12
 
 
 def _layer_by_depth(nodes, edges):
@@ -57,6 +81,124 @@ def _layer_by_depth(nodes, edges):
     return depth
 
 
+def _mean(values, default):
+    return sum(values) / len(values) if values else default
+
+
+def _neighbour_map(nodes, edges):
+    neighbours = {n: [] for n in nodes}
+    for parent, dep in edges:
+        if parent in neighbours and dep in neighbours:
+            neighbours[parent].append(dep)
+            neighbours[dep].append(parent)
+    return neighbours
+
+
+def _ordered_layers(nodes, edges, depth):
+    """Group nodes into layers and order each layer to reduce edge crossings.
+
+    Returns the layers top-down as drawn: dependents first, deepest
+    dependencies last. Ordering uses barycenter sweeps — each node moves
+    towards the average position of its neighbours — and is deterministic
+    (ties break alphabetically).
+    """
+    by_depth = {}
+    for n in nodes:
+        by_depth.setdefault(depth[n], []).append(n)
+    layers = [sorted(by_depth[d]) for d in sorted(by_depth, reverse=True)]
+
+    neighbours = _neighbour_map(nodes, edges)
+    index = {n: i for layer in layers for i, n in enumerate(layer)}
+    for _ in range(3):
+        for layer in layers:
+            layer.sort(
+                key=lambda n: (_mean([index[m] for m in neighbours[n]], index[n]), n)
+            )
+            for i, n in enumerate(layer):
+                index[n] = i
+    return layers
+
+
+def _x_positions(layers, edges, widths, gap):
+    """Assign horizontal centres, in px, to every node in ``layers``.
+
+    Adjacent nodes in a layer always clear each other's ``widths`` by at
+    least ``gap``. Whole layers are then nudged towards the mean position of
+    their neighbours so edges run as vertically as possible — rigid shifts,
+    so the spacing guarantee is preserved.
+    """
+    xs = {}
+    for layer in layers:
+        x = 0.0
+        prev = None
+        for n in layer:
+            if prev is not None:
+                x += (widths[prev] + widths[n]) / 2 + gap
+            xs[n] = x
+            prev = n
+        mid = (xs[layer[0]] + xs[layer[-1]]) / 2
+        for n in layer:
+            xs[n] -= mid
+
+    neighbours = {n: ms for n, ms in _neighbour_map(list(xs), edges).items() if ms}
+    for _ in range(3):
+        for layer in layers:
+            shifts = [
+                _mean([xs[m] for m in neighbours[n]], xs[n]) - xs[n]
+                for n in layer
+                if n in neighbours
+            ]
+            if shifts:
+                shift = sum(shifts) / len(shifts)
+                for n in layer:
+                    xs[n] += shift
+    return xs
+
+
+def _wrapped_rows(nodes, widths, gap, row_h, aspect):
+    """Wrap ``nodes`` into rows of a grid whose overall shape roughly
+    matches ``aspect`` (width/height), rather than one endless line."""
+    total = sum(widths[n] for n in nodes) + gap * (len(nodes) - 1)
+    target = max(
+        max(widths[n] for n in nodes), (max(aspect, 0.01) * total * row_h) ** 0.5
+    )
+    rows = []
+    row, filled = [], 0.0
+    for n in nodes:
+        step = widths[n] + (gap if row else 0)
+        if row and filled + step > target:
+            rows.append(row)
+            row, filled = [n], widths[n]
+        else:
+            row.append(n)
+            filled += step
+    if row:
+        rows.append(row)
+    return rows
+
+
+def _build_layers(nodes, edges, widths, gap, row_h, aspect):
+    """Split the graph into the rows it is drawn as.
+
+    The connected part keeps its dependency layering, crossing-reduced. Nodes
+    with no edges carry no layout information, so a line of them is pure
+    waste — they are wrapped into a grid (below the DAG, if any) shaped to
+    the widget's aspect ratio instead.
+    """
+    present = set(nodes)
+    linked = {n for e in edges if set(e) <= present for n in e}
+    connected = [n for n in nodes if n in linked]
+    isolated = [n for n in nodes if n not in linked]
+
+    layers = []
+    if connected:
+        depth = _layer_by_depth(connected, edges)
+        layers += _ordered_layers(connected, edges, depth)
+    if isolated:
+        layers += _wrapped_rows(isolated, widths, gap, row_h, aspect)
+    return layers
+
+
 def _node_state(entry, now):
     if not entry or entry.get("last_check") is None:
         return "unknown", ""
@@ -70,82 +212,137 @@ def _node_state(entry, now):
     return "ok", age_text
 
 
-class QbutlerDAGWidget(pg.PlotWidget):
+def _node_label(name, entry, now):
+    """The lines of text drawn under a node, and its state colour key."""
+    state, age_text = _node_state(entry, now)
+    lines = [name, state.upper()]
+    data = entry.get("data") if entry else None
+    if data is not None:
+        try:
+            lines.append(f"{data:.4g}")
+        except (TypeError, ValueError):
+            lines.append(str(data))
+    if age_text:
+        lines.append(age_text)
+    return lines, state
+
+
+class QbutlerDAGWidget(QtWidgets.QWidget):
     def __init__(self, args, req):
         super().__init__()
         self.args = args
-        self.setAspectLocked(False)
-        self.hideAxis("bottom")
-        self.hideAxis("left")
         self._latest = None
 
         # Expiry is a function of wall-clock: re-render every second
-        self.timer = QTimer()
-        self.timer.timeout.connect(self._render)
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.update)
         self.timer.start(1000)
 
     def data_changed(self, value, metadata, persist, mods, title):
         dag = value.get(self.args.dag)
         status = value.get(self.args.status) or {}
         self._latest = (dag, status, title)
-        self._render()
+        self.update()
 
-    def _render(self):
-        if self._latest is None:
-            return
-        dag, status, title = self._latest
-        if not dag or "nodes" not in dag:
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            painter.fillRect(self.rect(), QtGui.QColor(*BACKGROUND_COLOUR))
+            self._paint(painter)
+        finally:
+            painter.end()
+
+    def _paint(self, painter):
+        dag, status, title = self._latest or (None, {}, None)
+        fm = painter.fontMetrics()
+        text_pen = QtGui.QPen(QtGui.QColor(*TEXT_COLOUR))
+
+        top = MARGIN
+        if title:
+            painter.setPen(text_pen)
+            painter.drawText(
+                QtCore.QRectF(MARGIN, 0, self.width() - 2 * MARGIN, top + fm.height()),
+                QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter,
+                title,
+            )
+            top += fm.height() + LABEL_OFFSET
+
+        if not dag or not dag.get("nodes"):
+            painter.setPen(text_pen)
+            painter.drawText(
+                self.rect(), QtCore.Qt.AlignCenter, "Waiting for calibration DAG..."
+            )
             return
 
         nodes = list(dag["nodes"])
         edges = [tuple(e) for e in dag.get("edges", [])]
-        depth = _layer_by_depth(nodes, edges)
-
-        layers = {}
-        for n in nodes:
-            layers.setdefault(depth[n], []).append(n)
-
-        pos = {}
-        for d, layer_nodes in layers.items():
-            for i, n in enumerate(sorted(layer_nodes)):
-                pos[n] = (i - (len(layer_nodes) - 1) / 2, d)
-
         now = time.time()
 
-        self.clear()
-        for parent, dep in edges:
-            if parent in pos and dep in pos:
-                x = [pos[parent][0], pos[dep][0]]
-                y = [pos[parent][1], pos[dep][1]]
-                self.plot(x, y, pen=pg.mkPen(120, 120, 120, width=2))
-
+        lines = {}
+        colours = {}
         for n in nodes:
             entry = status.get(n) if isinstance(status, dict) else None
-            state, age_text = _node_state(entry, now)
-            colour = STATE_COLOURS[state]
+            lines[n], state = _node_label(n, entry, now)
+            colours[n] = STATE_COLOURS[state]
 
-            scatter = pg.ScatterPlotItem(
-                [pos[n][0]], [pos[n][1]], size=38, brush=pg.mkBrush(*colour)
+        # Layout, in px: space nodes by the size their labels actually render
+        # at, so neither the circles nor the text can ever overlap.
+        widths = {
+            n: max(NODE_SIZE, max(fm.horizontalAdvance(line) for line in lines[n]))
+            for n in nodes
+        }
+        line_h = fm.height()
+        avail_w = max(1.0, self.width() - 2 * MARGIN)
+        avail_h = max(1.0, self.height() - top - MARGIN)
+        max_label_h = max(len(lines[n]) for n in nodes) * line_h
+        row_h = NODE_SIZE + LABEL_OFFSET + max_label_h + V_GAP
+        layers = _build_layers(nodes, edges, widths, H_GAP, row_h, avail_w / avail_h)
+        xs = _x_positions(layers, edges, widths, H_GAP)
+        ys = {}
+        y = 0.0
+        for layer in layers:
+            for n in layer:
+                ys[n] = y + NODE_SIZE / 2
+            label_h = max(len(lines[n]) for n in layer) * line_h
+            y += NODE_SIZE + LABEL_OFFSET + label_h + V_GAP
+        total_h = y - V_GAP
+
+        x0 = min(xs[n] - widths[n] / 2 for n in nodes)
+        x1 = max(xs[n] + widths[n] / 2 for n in nodes)
+        total_w = x1 - x0
+
+        # Centre the drawing at natural size; scale down uniformly only if it
+        # does not fit. Never stretch it to fill the widget.
+        scale = min(1.0, avail_w / max(total_w, 1.0), avail_h / max(total_h, 1.0))
+        painter.translate(self.width() / 2, top + avail_h / 2)
+        painter.scale(scale, scale)
+        painter.translate(-(x0 + x1) / 2, -total_h / 2)
+
+        painter.setPen(QtGui.QPen(QtGui.QColor(*EDGE_COLOUR), 2))
+        for parent, dep in edges:
+            if parent in xs and dep in xs:
+                painter.drawLine(
+                    QtCore.QPointF(xs[parent], ys[parent]),
+                    QtCore.QPointF(xs[dep], ys[dep]),
+                )
+
+        painter.setPen(QtCore.Qt.NoPen)
+        for n in nodes:
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(*colours[n])))
+            painter.drawEllipse(
+                QtCore.QPointF(xs[n], ys[n]), NODE_SIZE / 2, NODE_SIZE / 2
             )
-            self.addItem(scatter)
 
-            data = entry.get("data") if entry else None
-            lines = [n, state.upper()]
-            if data is not None:
-                lines.append(f"{data:.4g}")
-            if age_text:
-                lines.append(age_text)
-            label = pg.TextItem("\n".join(lines), anchor=(0.5, -0.15))
-            label.setPos(pos[n][0], pos[n][1])
-            self.addItem(label)
-
-        if title:
-            self.setTitle(title)
-
-        all_x = [p[0] for p in pos.values()] or [0]
-        all_y = [p[1] for p in pos.values()] or [0]
-        self.setXRange(min(all_x) - 1, max(all_x) + 1)
-        self.setYRange(min(all_y) - 0.7, max(all_y) + 1.2)
+        painter.setPen(text_pen)
+        for n in nodes:
+            baseline = ys[n] + NODE_SIZE / 2 + LABEL_OFFSET + fm.ascent()
+            for line in lines[n]:
+                painter.drawText(
+                    QtCore.QPointF(xs[n] - fm.horizontalAdvance(line) / 2, baseline),
+                    line,
+                )
+                baseline += line_h
 
 
 def main():
