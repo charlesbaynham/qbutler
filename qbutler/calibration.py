@@ -1219,10 +1219,24 @@ class Calibration(ExpFragment):
 
         with _active_node_lock:
             if _active_node is self:
+                logger.info(
+                    "Measurement handover: %s already active, setup kept",
+                    self.__class__.__name__,
+                )
                 return
             if _active_node is not None:
                 node, _active_node = _active_node, None
+                logger.info(
+                    "Measurement handover: host_cleanup(%s) -> host_setup(%s)",
+                    node.__class__.__name__,
+                    self.__class__.__name__,
+                )
                 node.host_cleanup()
+            else:
+                logger.info(
+                    "Measurement handover: host_setup(%s) (nothing active)",
+                    self.__class__.__name__,
+                )
             _active_node = self
             self.host_setup()
 
