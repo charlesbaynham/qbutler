@@ -280,9 +280,12 @@ def _attempt_one_fix(node, attempts, blamed, force) -> bool:
     except CalibrationError as e:
         # The fix gave up on its own (e.g. the optimizer found no point that
         # checked out). Same failure as a bad re-check, so it gets the same
-        # treatment: record the node as broken and let the walk decide.
+        # treatment: record the node as broken and let the walk decide. The
+        # synthetic BAD_DATA is labelled fix_failed for the outcome hooks -
+        # it is not a measurement (see _on_checked).
         reason = str(e)
-        node._record_own_check(CalibrationResult.BAD_DATA, None)
+        with node._checking_for(CHECK_CONTEXT_FIX_FAILED):
+            node._record_own_check(CalibrationResult.BAD_DATA, None)
     else:
         logger.debug("Result of fix of %s = %s", name, result)
         if result == CalibrationResult.OK:
