@@ -18,7 +18,7 @@ from qbutler.optimizers import coordinate_descent_optimizer
 
 class SimpleCalibration(Calibration):
     def build_calibration(self):
-        self.set_timeout(100)
+        self.set_check_timeout(100)
 
     def check_own_state(self):
         return CalibrationResult.OK, 42.0
@@ -89,6 +89,11 @@ def test_status_dataset_published(fragment_factory, dataset_db):
     assert entry["timeout"] == 100
     assert entry["data"] == 42.0
     assert entry["last_check"] is not None
+    # Re-optimise bookkeeping: defaults for a node that has not opted in and
+    # has never been fixed
+    assert entry["last_optimised"] is None
+    assert entry["reoptimise_timeout"] is None
+    assert entry["uncalibrated"] is False
 
 
 def test_status_survives_new_instance(fragment_factory, monkeypatch):

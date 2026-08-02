@@ -40,7 +40,7 @@ def make_pair(b_fixable=True, b_max_fix_attempts="unset"):
 
     class Upstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
 
         def check_own_state(self):
             hw.a_checks += 1
@@ -53,7 +53,7 @@ def make_pair(b_fixable=True, b_max_fix_attempts="unset"):
 
     class Downstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
             self.add_dependency(Upstream)
             if b_max_fix_attempts != "unset":
                 self.set_max_fix_attempts(b_max_fix_attempts)
@@ -149,6 +149,113 @@ def test_marking_skips_deps_that_already_guess_bad(fragment_factory):
     assert _suspect_dependencies_of(b) is False
 
 
+def make_chain():
+    """Grandparent <- Parent <- Child over shared mock hardware, for the
+    one-hop suspicion tests. Child cannot come good unless the parent's
+    hardware is good; grandparent and parent check good independently."""
+    hw = SimpleNamespace(
+        g_good=True,
+        p_good=True,
+        c_good=False,
+        g_checks=0,
+        g_fixes=0,
+        p_checks=0,
+        p_fixes=0,
+        c_fixes=0,
+    )
+
+    class Grandparent(Calibration):
+        def build_calibration(self):
+            self.set_check_timeout(60)
+
+        def check_own_state(self):
+            hw.g_checks += 1
+            return (
+                CalibrationResult.OK if hw.g_good else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            hw.g_fixes += 1
+            hw.g_good = True
+
+    class Parent(Calibration):
+        def build_calibration(self):
+            self.set_check_timeout(60)
+            self.add_dependency(Grandparent)
+
+        def check_own_state(self):
+            hw.p_checks += 1
+            return (
+                CalibrationResult.OK if hw.p_good else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            hw.p_fixes += 1
+            hw.p_good = hw.g_good
+
+    class Child(Calibration):
+        def build_calibration(self):
+            self.set_check_timeout(60)
+            self.add_dependency(Parent)
+            self.set_max_fix_attempts(2)
+
+        def check_own_state(self):
+            return (
+                CalibrationResult.OK if hw.c_good else CalibrationResult.BAD_DATA
+            ), None
+
+        def fix_own_state(self) -> None:
+            hw.c_fixes += 1
+            hw.c_good = hw.p_good
+
+    return hw, Grandparent, Parent, Child
+
+
+def test_suspicion_travels_one_hop_only(fragment_factory):
+    """A failure in Child impugns only its DIRECT dependency (Parent), never
+    the grandparent: doubt propagates one edge per failure (Charles,
+    2026-08-02). Live case: CoarseClockCentre's failed fix wrongly marked
+    both the XODT *and* the red MOT behind it."""
+    hw, Grandparent, Parent, Child = make_chain()
+    c = fragment_factory(Child)
+    p = c.Parent
+    g = p.Grandparent
+
+    g.check_state()
+    p.check_state()
+    assert _suspect_dependencies_of(c) is True
+
+    assert p.is_suspect()
+    assert not g.is_suspect()  # one hop only — the grandparent is not accused
+
+
+def test_suspicion_cascades_hop_by_hop_through_the_walk(fragment_factory):
+    """When the parent genuinely IS broken because of the grandparent, the
+    cascade still reaches the grandparent — one failed fix per hop: Child's
+    failure suspects Parent; Parent re-measures bad and its own failed fix
+    suspects Grandparent; Grandparent is repaired and the chain unwinds."""
+    hw, Grandparent, Parent, Child = make_chain()
+    c = fragment_factory(Child)
+    p = c.Parent
+    g = p.Grandparent
+
+    g.check_state()
+    p.check_state()
+    # The silent double drift: both look good, both are actually broken
+    hw.g_good = False
+    hw.p_good = False
+
+    c.fix_state()
+
+    # Each hop was accused exactly by its own dependent's failure, and the
+    # whole chain came good bottom-up
+    assert hw.g_fixes == 1
+    assert hw.p_fixes >= 1
+    assert hw.c_good and hw.p_good and hw.g_good
+    assert not p.is_suspect() and not g.is_suspect()
+    assert c.check_state()[0] == CalibrationResult.OK
+
+
 def test_suspect_guess_leaves_the_cached_result_intact(fragment_factory):
     hw, Upstream, _ = make_pair()
     a = fragment_factory(Upstream)
@@ -219,14 +326,14 @@ def test_diamond_suspicion_clears_per_suspector(fragment_factory):
 
     class D(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
 
         def check_own_state(self):
             return CalibrationResult.OK, None
 
     class X(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
             self.add_dependency(D)
 
         def check_own_state(self):
@@ -234,7 +341,7 @@ def test_diamond_suspicion_clears_per_suspector(fragment_factory):
 
     class Y(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
             self.add_dependency(D)
 
         def check_own_state(self):
@@ -287,18 +394,23 @@ def test_status_entries_without_suspected_by_are_tolerated(
     assert not a2.is_suspect()
 
 
-def test_force_never_backtracks(fragment_factory):
-    """force=True re-fixes every node from scratch anyway, so a failed fix
-    marks suspects (for later readers) but the walk does not restart."""
+def test_force_marks_all_then_walks_ordinarily(fragment_factory):
+    """force=True marks every fixable node UNCALIBRATED and then runs the
+    ordinary walk — so, unlike the old special-cased force walk, it DOES
+    backtrack: Downstream's failed fix casts suspicion on Upstream, which is
+    re-measured before Downstream is retried."""
     hw, Upstream, Downstream = make_pair(b_fixable=False, b_max_fix_attempts=2)
     b = fragment_factory(Downstream)
 
     with pytest.raises(CalibrationError, match="failed after 2 attempts"):
         b.fix_state(force=True)
 
-    # Upstream was force-fixed exactly once: the walk never came back to it
+    # Upstream got its one forced re-fix (mark cleared by its success)...
     assert hw.a_fixes == 1
     assert hw.b_fixes == 2
+    # ...and was then re-measured when Downstream's failure suspected it —
+    # the walk backtracked instead of latching Upstream done for the walk
+    assert hw.a_checks >= 2
 
 
 def test_applet_reports_suspect_only_for_trusted_looking_entries():
@@ -331,7 +443,7 @@ def test_the_walk_keeps_re_examining_upstream_not_just_once(fragment_factory):
 
     class Upstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
 
         def check_own_state(self):
             return (
@@ -344,7 +456,7 @@ def test_the_walk_keeps_re_examining_upstream_not_just_once(fragment_factory):
 
     class Downstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
             self.add_dependency(Upstream)
             # A budget only so a regression fails the test instead of hanging
             self.set_max_fix_attempts(12)
@@ -377,7 +489,7 @@ def test_a_node_is_retried_only_after_more_basic_work_is_done(fragment_factory):
 
     class Upstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
 
         def check_own_state(self):
             order.append("check A")
@@ -391,7 +503,7 @@ def test_a_node_is_retried_only_after_more_basic_work_is_done(fragment_factory):
 
     class Downstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
             self.add_dependency(Upstream)
 
         def check_own_state(self):

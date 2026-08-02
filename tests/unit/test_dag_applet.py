@@ -147,6 +147,42 @@ def test_node_state():
     assert _node_state(bad, now) == ("bad", "5 s ago")
 
 
+def test_node_state_uncalibrated():
+    now = 1000.0
+    ok = {"status": 0, "last_check": now - 5, "timeout": 60}
+
+    # The three routes into UNCALIBRATED: the explicit force mark, an
+    # opted-in node never provably optimised, and a lapsed window
+    assert _node_state({**ok, "uncalibrated": True}, now)[0] == "uncalibrated"
+    assert _node_state({**ok, "reoptimise_timeout": 100}, now)[0] == "uncalibrated"
+    stale_fix = {**ok, "reoptimise_timeout": 100, "last_optimised": now - 200}
+    assert _node_state(stale_fix, now)[0] == "uncalibrated"
+
+    # A fresh fix inside the window: plain ok
+    fresh_fix = {**ok, "reoptimise_timeout": 100, "last_optimised": now - 5}
+    assert _node_state(fresh_fix, now)[0] == "ok"
+    # Not opted in, marked False: nothing due
+    assert _node_state({**ok, "uncalibrated": False}, now)[0] == "ok"
+    # Legacy entry with none of the new keys: unchanged behaviour
+    assert _node_state(ok, now)[0] == "ok"
+
+    # Precedence: bad beats uncalibrated; uncalibrated beats expired and
+    # suspect (a passing check cannot rescue it, so it is the stronger claim)
+    bad = {"status": 4, "last_check": now - 5, "timeout": 60, "uncalibrated": True}
+    assert _node_state(bad, now)[0] == "bad"
+    stale = {"status": 0, "last_check": now - 90, "timeout": 60, "uncalibrated": True}
+    assert _node_state(stale, now)[0] == "uncalibrated"
+    suspect = {**ok, "suspected_by": ["X"], "uncalibrated": True}
+    assert _node_state(suspect, now)[0] == "uncalibrated"
+
+    # A force mark can precede any check (the batched mark writes a minimal
+    # entry): uncalibrated, not unknown
+    assert _node_state({"last_check": None, "uncalibrated": True}, now) == (
+        "uncalibrated",
+        "",
+    )
+
+
 def test_node_label_handles_non_numeric_data():
     entry = {"status": 0, "last_check": 995.0, "timeout": 60, "data": [1, 2]}
     lines, state = _node_label("MyCal", entry, 1000.0)
@@ -170,7 +206,10 @@ widget.data_changed(
             "nodes": ["A", "B", "C", "D"],
             "edges": [["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"]],
         },
-        "status": {"A": {"status": 0, "last_check": 0, "timeout": 60}},
+        "status": {
+            "A": {"status": 0, "last_check": 0, "timeout": 60},
+            "B": {"status": 0, "last_check": 0, "timeout": 60, "uncalibrated": True},
+        },
     },
     {},
     {},

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class SimpleMonitor(Calibration):
     def build_calibration(self):
-        self.set_timeout(1.0)  # 1s timeout
+        self.set_check_timeout(1.0)  # 1s timeout
 
     def check_own_state(self):
         return CalibrationResult.OK, 123.0
@@ -27,7 +27,7 @@ class RandomMonitor(Calibration):
             default=0.5,
         )
         self.threshold: FloatParam
-        self.set_timeout(1.1)  # 1.1 seconds, just to be different
+        self.set_check_timeout(1.1)  # 1.1 seconds, just to be different
 
     def check_own_state(self):
         logger.debug("Monitor check_own_state ran once")

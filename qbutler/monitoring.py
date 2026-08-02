@@ -81,7 +81,7 @@ def make_monitor_controller(
     float. These :class:`Calibration` objects will not be fixed, only monitored.
 
     Monitors must have a timeout set that is not zero, otherwise an error will
-    be thrown (see :meth:`.set_timeout`).
+    be thrown (see :meth:`.set_check_timeout`).
 
     TODO: Have the MonitorController optionally try to repair broken
     Calibrations
@@ -90,7 +90,7 @@ def make_monitor_controller(
 
         class SimpleMonitor(Calibration):
             def build_calibration(self):
-                self.set_timeout(1.0)  # 1s timeout
+                self.set_check_timeout(1.0)  # 1s timeout
 
             def check_own_state(self):
                 return CalibrationResult.OK, 123.0

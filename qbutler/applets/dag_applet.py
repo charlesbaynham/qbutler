@@ -10,7 +10,10 @@ the per-calibration state in ``calibrations.status``:
 - purple: SUSPECT — the last check was OK and within timeout, but a dependent
   calibration failed to fix itself, so this node's OK is no longer trusted and
   it will be re-measured; the label names the suspecting calibration(s)
-- grey: no status recorded
+- light grey: UNCALIBRATED — must be re-optimised at the next fix walk
+  (force-marked, or its re-optimise timeout has lapsed since the last
+  successful fix); a passing check cannot rescue it
+- dark grey: no status recorded
 
 Nodes are layered by dependency depth (dependents above their dependencies),
 ordered within each layer to reduce edge crossings, and spaced by the pixel
@@ -41,6 +44,7 @@ STATE_COLOURS = {
     "bad": (220, 50, 47),
     "expired": (255, 160, 0),
     "suspect": (155, 90, 200),
+    "uncalibrated": (200, 200, 200),
     "unknown": (130, 130, 130),
 }
 
@@ -203,14 +207,37 @@ def _build_layers(nodes, edges, widths, gap, row_h, aspect):
     return layers
 
 
+def _reoptimise_due(entry, now):
+    """UNCALIBRATED: force-marked, or (opted in to a re-optimise timeout and
+    the last successful fix is missing or older than it)."""
+    if entry.get("uncalibrated"):
+        return True
+    reoptimise_timeout = entry.get("reoptimise_timeout")
+    if reoptimise_timeout is None:
+        return False
+    last_optimised = entry.get("last_optimised")
+    return last_optimised is None or (now - float(last_optimised)) > float(
+        reoptimise_timeout
+    )
+
+
 def _node_state(entry, now):
-    if not entry or entry.get("last_check") is None:
+    if not entry:
         return "unknown", ""
+    due = _reoptimise_due(entry, now)
+    if entry.get("last_check") is None:
+        # A force mark can precede any check (the batched mark writes a
+        # minimal entry for never-checked nodes)
+        return ("uncalibrated", "") if due else ("unknown", "")
     status = int(entry["status"])
     age = now - float(entry["last_check"])
     age_text = f"{age:.0f} s ago"
     if status != 0:
         return "bad", age_text
+    if due:
+        # Before "expired": a passing check cannot rescue an UNCALIBRATED
+        # node, so it is the stronger statement
+        return "uncalibrated", age_text
     if age > float(entry.get("timeout", 0)):
         return "expired", age_text
     if entry.get("suspected_by"):
