@@ -438,13 +438,22 @@ def _mark_uncalibrated(nodes) -> None:
 
 
 def _suspect_dependencies_of(failed: "Calibration") -> bool:
-    """Cast suspicion on the dependencies of a calibration whose fix failed.
+    """Cast suspicion on the DIRECT dependencies of a calibration whose fix
+    failed.
 
     If a node cannot be brought good, the likeliest physical explanation is
     often a dependency that still *looks* good — its last check passed and its
-    timeout has not expired — but has actually drifted. Every such dependency
-    is marked suspect (see :meth:`Calibration._add_suspicion`), which makes it
-    a candidate for re-measurement despite its timeout.
+    timeout has not expired — but has actually drifted. Every such direct
+    dependency is marked suspect (see :meth:`Calibration._add_suspicion`),
+    which makes it a candidate for re-measurement despite its timeout.
+
+    Suspicion deliberately travels ONE edge at a time (Charles, 2026-08-02):
+    a failure in C impugns only C's own dependencies, not their dependencies
+    in turn — those are only in doubt if a direct dependency itself then
+    fails to come good, whereupon *its* failed fix casts the next hop. The
+    walk's re-planning makes that cascade happen naturally when it is
+    warranted, instead of a single failure smearing doubt over the whole
+    chain (and re-measuring every ancestor) at once.
 
     Dependencies that already guess bad (expired, failed, or already suspect)
     are left alone: the ordinary walk logic re-examines those anyway.
@@ -456,7 +465,8 @@ def _suspect_dependencies_of(failed: "Calibration") -> bool:
     """
     name = failed.__class__.__name__
     try:
-        deps = dag.get_dependencies(failed)
+        # Direct dependencies only: graph edges point parent -> dependency
+        deps = list(dag.get_graph(failed).successors(failed))
     except Exception:
         logger.warning(
             "Could not walk dependencies of %s to mark suspects", name, exc_info=True
@@ -1485,6 +1495,10 @@ class Calibration(ExpFragment):
             # This node coming good also answers the suspicion *it* cast on its
             # own dependencies: whatever was wrong evidently was not them.
             # Their still-in-timeout OKs become trusted again, unmeasured.
+            # Deliberately broader than the one-hop *casting* in
+            # _suspect_dependencies_of: retracting from every reachable
+            # dependency is a no-op on non-suspects and also cleans up marks
+            # cast before suspicion became one-hop.
             name = self.__class__.__name__
             try:
                 for dep in dag.get_dependencies(self):
