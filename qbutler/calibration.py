@@ -1179,14 +1179,6 @@ class Calibration(ExpFragment):
         # tell an ndscan-managed node (e.g. a monitor, set up at experiment
         # start) from a detached dependency that has never been prepared.
         self._lifecycle_setup_ran = True
-        # TODO(2026-08-02 Andor-timeout debug): diagnostic only — show which
-        # subfragments the default recursion will visit vs skip.
-        logger.info(
-            "%s host_setup: subfragments=%s detached=%s",
-            self.__class__.__name__,
-            [type(s).__name__ for s in self._subfragments],
-            [type(s).__name__ for s in self._detached_subfragments],
-        )
         super().host_setup()
 
     def _activate(self) -> None:
