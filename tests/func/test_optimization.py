@@ -24,14 +24,21 @@ def test_can_optimize(fragment_factory):
 
 
 def test_cannot_optimize_without_params(fragment_factory):
+    # No optimizable params and no fix_own_state override: unfixable. A
+    # forced walk skips unfixable nodes (it cannot re-optimise them), so to
+    # reach the fix path the node must measure bad — whereupon the base
+    # fix_own_state raises ValueError.
     class Cali(Calibration):
         def build_calibration(self):
             pass
 
+        def check_own_state(self):
+            return CalibrationResult.BAD_DATA, None
+
     c = fragment_factory(Cali)
 
     with pytest.raises(ValueError):
-        c.fix_state(force=True)
+        c.fix_state()
 
 
 def test_cannot_optimize_without_check_own_state(fragment_factory):

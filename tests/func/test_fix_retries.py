@@ -102,7 +102,7 @@ def test_bounded_dependency_failure_marks_the_dependant_bad(fragment_factory):
         def build_calibration(self):
             self.add_dependency(Stubborn)
             # So the guess below is not simply "expired"
-            self.set_timeout(60)
+            self.set_check_timeout(60)
 
         def check_own_state(self):
             return CalibrationResult.OK, None

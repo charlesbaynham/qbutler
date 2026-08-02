@@ -45,7 +45,7 @@ Users subclass `Calibration` and implement three methods:
 
 `run_once()` is auto-generated from `check_own_state()` — do not override it.
 
-All build-phase methods (`add_dependency`, `set_timeout`, `setattr_param_optimizable`, etc.) raise `TypeError` if called outside `build_calibration()`.
+All build-phase methods (`add_dependency`, `set_check_timeout`, `set_reoptimise_timeout`, `setattr_param_optimizable`, etc.) raise `TypeError` if called outside `build_calibration()`.
 
 ### CalibrationResult
 
@@ -97,7 +97,7 @@ A kernel cannot pause itself — `scheduler.pause()` has to hand the core device
 
 ### Fix retries
 
-A fix walk fixes a node and re-checks it; if the re-check is still not OK — or the fix gave up with a `CalibrationError`, e.g. an optimizer that found no valid point — **the node is simply fixed again, indefinitely by default** (`Calibration._fix_own_state_until_ok`). Crashing the experiment is opt-in: `set_max_fix_attempts(n)` bounds one calibration, `calibration.DEFAULT_MAX_FIX_ATTEMPTS` bounds the whole process (`= 1` restores the old fail-fast behaviour). The budget is read at fix time, not build time.
+A fix walk fixes a node and re-checks it; if the re-check is still not OK — or the fix gave up with a `CalibrationError`, e.g. an optimizer that found no valid point — **the node is simply fixed again, indefinitely by default** (the walk re-selects it: `_drive_dag_to_ok` / `_attempt_one_fix`). Crashing the experiment is opt-in: `set_max_fix_attempts(n)` bounds one calibration, `calibration.DEFAULT_MAX_FIX_ATTEMPTS` bounds the whole process (`= 1` restores the old fail-fast behaviour). The budget is read at fix time, not build time.
 
 Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc. is a bug in the calibration and propagates immediately. The loop yields to the scheduler between attempts, so a run stuck on a hopeless calibration can still be terminated.
 
@@ -113,19 +113,31 @@ When a node's fix attempt fails, the real culprit is often a dependency that sti
 
 A suspect node's `_guess_own_state()` returns `BAD_EXPIRED` (return-only — the cached OK is left intact), so every walk, monitor, and client escape check re-measures it with no special-casing. Suspicion clears when (a) the node is re-measured — any fresh result supersedes doubt — or (b) a suspector records an OK check, which retracts its name from live dependencies and prunes it from every `calibrations.status` entry (so it works cross-process).
 
-Suspicion needs no walk machinery of its own, because the fix walk holds no plan: see *The fix walk* below. A suspect dependency stops guessing OK, so it is simply the most basic not-OK node on the next pass and gets measured then. `force=True` walks still mark suspects (for monitors and later walks) but choose their next node by "not yet fixed this walk" instead. The DAG applet shows suspect nodes in purple with the suspector's name.
+Suspicion needs no walk machinery of its own, because the fix walk holds no plan: see *The fix walk* below. A suspect dependency stops guessing OK, so it is simply the most basic not-OK node on the next pass and gets measured then. The DAG applet shows suspect nodes in purple with the suspector's name.
+
+### UNCALIBRATED: the re-optimise timeout, and force
+
+A passing check says the system is good *enough*, not that its parameters are still optimal. A node may therefore **opt in** to a second, independent timeout — `set_reoptimise_timeout(seconds)` — measured from its last *successful fix* (`last_optimised`, stamped by `_record_own_fix` when a fix + re-check succeeds). Once it lapses (or if the node has opted in but has no stamp at all — never provably optimised), the node is **UNCALIBRATED**: the next fix walk selects it for a fix *directly*, with no rescuing re-check first. Only a successful fix clears the state; a passing check never does (`_record_own_check` deliberately leaves the mark and stamp alone).
+
+Like SUSPECT, UNCALIBRATED is not a `CalibrationResult` member — it is side-channel state (`uncalibrated` mark + `last_optimised` + `reoptimise_timeout` in `calibrations.status`, recalled by `_recall_status` even for never-checked nodes) consulted via `Calibration._needs_reoptimise()`. It is consumed **only** by fix walks and the client escape check (`_needs_recalibration`); `check_state` / `check_targets` / monitor polls ignore it entirely — "due a re-optimise" does not mean "the apparatus is bad".
+
+**Fixability gates everything.** `is_fixable()` = has optimizable params or overrides `fix_own_state`. Unfixable, check-only nodes (monitors; future "human must fix it" checks) can never be UNCALIBRATED, and `set_reoptimise_timeout` on one is a build-time `TypeError`. The re-optimise timeout must be > 0 (0 would demand a re-fix every pass, and the walk would never terminate).
+
+**`force=True` is now just "mark, then walk":** `fix_state(force=True)` / `fix_targets(force=True)` / `recalibrate_if_needed(force=True)` persistently mark every fixable node UNCALIBRATED (one batched `calibrations.status` write, `_mark_uncalibrated`) and then run the completely ordinary walk. There is no special force scheduling any more — the old rule ("every node not yet successfully fixed this walk") ignored node state, so a node that could not come good was rescanned forever while expired or suspect dependencies were never revisited (this livelocked a live rig run on 2026-08-02). A forced walk now backtracks, honours expiry, skips unfixable nodes (the old code crashed on them), and — because the marks are persisted — an interrupted forced walk resumes its intent on the next walk, even in a new worker process. The client's one-shot `_force_consumed` latch survives (force is a static param re-read on every kernel re-entry; without the latch a forced client would re-mark and escape forever). `check_state(force=True)` keeps its separate meaning: re-*measure* everything once.
+
+The DAG applet shows UNCALIBRATED nodes in light grey; precedence there is bad → uncalibrated → expired → suspect → ok (a check cannot rescue an uncalibrated node, so it outranks expired).
 
 ### The fix walk
 
 `fix_state` / `fix_targets` delegate to `_drive_dag_to_ok`, which **re-plans from scratch after every attempt**. Each pass asks the DAG for its nodes (furthest-dependency-first) and acts on the first one that is not OK; one fix attempt is made; then the question is asked again. There is no precomputed node list, no backtracking, and no limit on how often the walk may change its mind — whichever node is the most basic problem *now* is the one that runs next.
 
-This is cheap because a node inside its timeout answers `_guess_own_state()` from its cached status: only stale, failed, or suspect nodes cost a measurement, and measuring one refreshes it for later passes.
+This is cheap because a node inside its timeout answers `_guess_own_state()` from its cached status: only stale, failed, suspect, or uncalibrated nodes cost a measurement, and measuring one refreshes it for later passes.
 
 `_attempt_one_fix` therefore makes exactly **one** fix + re-check and returns; retrying is the walk's decision, not the node's. A node that has just cast fresh suspicion upstream is spared its budget check once, so even `max_fix_attempts=1` gets one chance to blame a dependency before giving up.
 
 An earlier design walked a precomputed list and backtracked via an internal `_SuspectDependencies` exception, **once per node per walk**; after that a node spun in a local retry loop, re-fixing itself forever while the dependencies it kept blaming were never re-measured. That is why the scheduling rule is now "recompute every time" rather than a special case for suspicion.
 
-`set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
+`set_check_timeout(seconds)` sets how long a check result is valid (`set_timeout` is a deprecated alias of it). **`set_check_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require a check timeout > 0. The re-optimise timeout is the opposite: unset (None) means "never re-optimise by age", and 0 is rejected.
 
 ### Applets and dataset scoping (ccb.py, scoping.py, applets/)
 

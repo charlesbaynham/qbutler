@@ -42,6 +42,10 @@ class RecordedCalibration(RecordingMixin, Calibration):
 
     def build_calibration(self):
         self.setattr_param_optimizable("test", "A test", 0.0, 1.0, default=0.5)
+        # A non-zero check timeout, so the fix walk's final pass trusts the
+        # re-check it just made instead of measuring once more (which would
+        # append a second CHECK_CONTEXT_CHECK to the recorded contexts)
+        self.set_check_timeout(60)
 
     def check_own_state(self):
         metric = 10.0 * self.test.get()

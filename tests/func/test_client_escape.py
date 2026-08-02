@@ -28,7 +28,7 @@ class DriftingCal(Calibration):
 
     def build_calibration(self):
         self.setattr_device("core")
-        self.set_timeout(300.0)
+        self.set_check_timeout(300.0)
         self.setattr_param_optimizable(
             "p", "Test param", min=0.0, max=10.0, default=5.0
         )
@@ -325,3 +325,110 @@ def test_main_kernel_compiled_once_across_escape(experiment_factory):
     assert len(exp.fragment.seen) == 2  # entered twice (one escape)
     assert compiled_names.count("_entry") == 1
     assert compiled_names.count("_run_continuous_kernel") == 0
+
+
+class HostCal(Calibration):
+    """Host-mode calibration (no kernel) for exercising the client's force
+    latch without hardware."""
+
+    def build_calibration(self):
+        self.set_check_timeout(300.0)
+        self.setattr_param_optimizable(
+            "p", "Test param", min=0.0, max=10.0, default=5.0
+        )
+
+    def check_own_state(self):
+        v = self.p.get()
+        data = 10.0 - abs(v - 7.0)
+        if data > 8.0:
+            return CalibrationResult.OK, data
+        return CalibrationResult.BAD_DATA, data
+
+
+class HostClient(CalibratedExpFragment):
+    def build_fragment(self):
+        self.setattr_calibration(HostCal)
+
+
+def test_needs_recalibration_force_marks_and_consumes(fragment_factory):
+    """The one-shot latch: the first forced call marks every fixable node
+    UNCALIBRATED and escapes; once the walk has consumed the marks, further
+    forced calls are no-ops (force is a static param re-read on every kernel
+    re-entry, so without the latch a forced client would escape forever)."""
+    frag = fragment_factory(HostClient)
+    cal = frag.HostCal
+
+    # Bring the DAG healthy first, so anything the forced call reports is
+    # down to the force alone
+    cal.fix_state()
+    assert frag._needs_recalibration(False) is False
+
+    assert frag._needs_recalibration(True) is True
+    assert cal._needs_reoptimise()  # marked, despite being healthy
+
+    # The ordinary walk consumes the mark (this is what the escape handler
+    # runs); the latch means the next forced call finds nothing to do
+    frag._recalibrate()
+    assert not cal._needs_reoptimise()
+    assert frag._needs_recalibration(True) is False
+
+
+def test_needs_recalibration_true_when_reoptimise_due(fragment_factory, monkeypatch):
+    """No force involved: an opted-in node whose re-optimise window lapses
+    must trigger the escape check, so the re-fix happens at the next
+    opportunity rather than waiting for a check to expire."""
+    import qbutler.calibration
+
+    class WindowedCal(HostCal):
+        def build_calibration(self):
+            super().build_calibration()
+            self.set_reoptimise_timeout(100.0)
+
+    class WindowedClient(CalibratedExpFragment):
+        def build_fragment(self):
+            self.setattr_calibration(WindowedCal)
+
+    frag = fragment_factory(WindowedClient)
+    cal = frag.WindowedCal
+
+    cal.fix_state()
+    fixed_at = qbutler.calibration.time()
+    assert frag._needs_recalibration(False) is False  # freshly optimised
+
+    monkeypatch.setattr(qbutler.calibration, "time", lambda: fixed_at + 200)
+    assert frag._needs_recalibration(False) is True  # window lapsed
+
+
+class ForcedClient(CalibratedExpFragment):
+    def build_fragment(self):
+        self.setattr_device("core")
+        self.setattr_calibration(DriftingCal)
+        self.n_runs = 0
+
+    def _count(self):
+        self.n_runs += 1
+
+    @kernel
+    def run_once(self):
+        self._count()
+        self.recalibrate_if_needed(True)
+
+
+@pytest.mark.withartiq
+def test_forced_client_reoptimises_once_and_settles(experiment_factory):
+    """End to end through the kernel: a healthy DAG plus force escapes exactly
+    once, re-optimises, and then runs — rather than escaping forever."""
+    exp = _wrap(experiment_factory, ForcedClient)
+    frag = exp.fragment
+
+    frag.host_setup()
+    frag.DriftingCal.fix_state()
+    stamp_before = frag.DriftingCal.get_last_optimised()
+    frag.n_runs = 0
+
+    exp.run()
+
+    # One escape (the forced mark) then the settled run
+    assert frag.n_runs == 2
+    # The DAG really was re-optimised, not just re-checked
+    assert frag.DriftingCal.get_last_optimised() > stamp_before

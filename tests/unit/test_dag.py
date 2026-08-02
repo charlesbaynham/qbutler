@@ -317,14 +317,14 @@ def _make_chain():
 
     class Upstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
 
         def check_own_state(self):
             return CalibrationResult.OK, None
 
     class Downstream(Calibration):
         def build_calibration(self):
-            self.set_timeout(60)
+            self.set_check_timeout(60)
             self.add_dependency(Upstream)
 
         def check_own_state(self):

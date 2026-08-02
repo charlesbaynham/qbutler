@@ -55,6 +55,7 @@ from .calibration import Calibration
 from .calibration import CalibrationError
 from .calibration import CalibrationEscape
 from .calibration import CalibrationResult
+from .calibration import _mark_uncalibrated
 from .calibration import deactivate_active_calibration
 from .calibration import fix_targets
 from .precompile import PrecompilePool
@@ -155,14 +156,15 @@ class CalibratedExpFragment(ExpFragment):
     calibration_targets: list = None
     max_recalibrations: int = 20
 
-    # One-shot latch for ``force``. A forced recalibration must escape and
-    # re-optimize the DAG exactly once, then let the client run; ``force`` is a
-    # static param, so re-reading it on every escape re-entry would escape
-    # forever (never settling -> CalibrationError). ``_force_consumed`` gates the
-    # escape; ``_force_fix_pending`` tells the ensuing fix walk to re-optimize
-    # unconditionally. Never reset per host_setup (it re-runs on every re-entry).
+    # One-shot latch for ``force``. A forced recalibration must mark the DAG
+    # UNCALIBRATED exactly once, then let the ordinary walk work through the
+    # marks; ``force`` is a static param, so re-reading it on every escape
+    # re-entry would re-mark and escape forever (never settling ->
+    # CalibrationError). The marks themselves are persisted in the status
+    # dataset until each node's fix succeeds, so no companion "fix pending"
+    # flag is needed. Never reset per host_setup (it re-runs on every
+    # re-entry).
     _force_consumed: bool = False
-    _force_fix_pending: bool = False
 
     def build(self, *args, **kwargs):
         # One experiment = one calibration tree = one registry: scoping the
@@ -204,10 +206,12 @@ class CalibratedExpFragment(ExpFragment):
         safe — typically a scan-point boundary, not mid-shot.
 
         Args:
-            force: Re-measure and re-optimize the whole DAG once, even if it
-                looks healthy. Consumed after the first forced fix (see
+            force: Mark every fixable node UNCALIBRATED once, so the ensuing
+                walk re-optimises the whole DAG even if it looks healthy.
+                Consumed after the first forced escape (see
                 :attr:`_force_consumed`) so the client eventually runs rather
-                than escaping forever.
+                than escaping forever; the marks themselves persist until
+                each node's fix succeeds.
         """
         if self._needs_recalibration(force):
             raise CalibrationEscape("a calibration dependency needs recalibrating")
@@ -242,7 +246,9 @@ class CalibratedExpFragment(ExpFragment):
         The escape/re-enter loops (continuous and scanned) call this on a
         :class:`~qbutler.calibration.CalibrationEscape`; it walks the union so a
         shared dependency is fixed once. A forced escape (see
-        :meth:`recalibrate_if_needed`) re-optimizes every node unconditionally.
+        :meth:`recalibrate_if_needed`) needs no special walk: it has already
+        marked every fixable node UNCALIBRATED, and the ordinary walk re-fixes
+        marked nodes.
 
         The walk yields to the scheduler between the shots of a fix (see
         :meth:`~qbutler.calibration.Calibration._pause_if_requested`), so a
@@ -250,9 +256,7 @@ class CalibratedExpFragment(ExpFragment):
         to completion; a termination raises ``TerminationRequested`` through
         here, which the wrapper suppresses to end the experiment cleanly.
         """
-        force = self._force_fix_pending
-        self._force_fix_pending = False
-        fix_targets(self._resolve_targets(), force=force)
+        fix_targets(self._resolve_targets())
 
     def _resolve_targets(self) -> list:
         if self.calibration_targets is not None:
@@ -288,13 +292,20 @@ class CalibratedExpFragment(ExpFragment):
 
     @rpc
     def _needs_recalibration(self, force: TBool = False) -> TBool:
+        targets = getattr(self, "_cal_targets", None) or self._resolve_targets()
+        nodes = dag.get_union_dependencies(targets)
         if force and not self._force_consumed:
             self._force_consumed = True
-            self._force_fix_pending = True
+            # Persistently mark every fixable node UNCALIBRATED: the ensuing
+            # ORDINARY fix walk re-optimises them, and the marks survive
+            # interruption and even a worker restart.
+            _mark_uncalibrated(nodes)
             return True
-        targets = getattr(self, "_cal_targets", None) or self._resolve_targets()
-        for node in dag.get_union_dependencies(targets):
-            if node._guess_own_state() != CalibrationResult.OK:
+        for node in nodes:
+            if (
+                node._guess_own_state() != CalibrationResult.OK
+                or node._needs_reoptimise()
+            ):
                 return True
         return False
 

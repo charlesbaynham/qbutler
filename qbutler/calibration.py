@@ -1,5 +1,6 @@
 import logging
 import threading
+import warnings
 from contextlib import contextmanager
 from enum import Flag
 from enum import auto
@@ -34,9 +35,10 @@ from .optimizers import grid_search_optimizer
 
 logger = logging.getLogger(__name__)
 
-#: Broadcast dataset holding a {class_name: {status, last_check, timeout, data}}
-#: table, published on every check so applets and later worker processes can
-#: see calibration state.
+#: Broadcast dataset holding a {class_name: {status, last_check, timeout, data,
+#: suspected_by, last_optimised, reoptimise_timeout, uncalibrated}} table,
+#: published on every check so applets and later worker processes can see
+#: calibration state.
 #:
 #: Deliberately *not* scoped per pipeline, unlike :data:`OPTIMIZER_DATASET` and
 #: :data:`~qbutler.dag.DAG_DATASET`: when a calibration was last checked, and
@@ -209,16 +211,25 @@ def _drive_dag_to_ok(get_nodes, force=False) -> None:
     answered and the original node is retried. No backtracking machinery, no
     limit on how many times the walk may change its mind.
 
+    A node that is UNCALIBRATED (:meth:`Calibration._needs_reoptimise` — its
+    re-optimise timeout has lapsed, or a forced walk marked it) is selected
+    for a fix *directly*, with no rescuing re-check first: the point of the
+    state is to re-establish the optimum, so a passing check must not clear
+    it. Only a successful fix does (:meth:`Calibration._record_own_fix`).
+
     Re-planning is cheap because a node inside its timeout answers
     :meth:`~Calibration._guess_own_state` from its cached status: only nodes
-    that are stale, failed, or suspect cost a measurement, and measuring one
-    refreshes it for the passes that follow.
+    that are stale, failed, suspect, or uncalibrated cost a measurement, and
+    measuring one refreshes it for the passes that follow.
 
     Args:
         get_nodes: callable returning the DAG's nodes, furthest-dependency
             first. Called afresh on every pass, so nodes appearing mid-walk
             are picked up.
-        force: fix every node once regardless of its state, deepest first.
+        force: persistently mark every fixable node UNCALIBRATED up front,
+            then run the ordinary walk — so every fixable node gets re-fixed,
+            deepest first, and the marks survive interruption (they live in
+            the status dataset until each node's fix succeeds).
 
     Raises:
         CalibrationError: if a node exhausts a finite attempt budget (see
@@ -228,18 +239,21 @@ def _drive_dag_to_ok(get_nodes, force=False) -> None:
     """
     attempts = {}
     blamed = set()
-    fixed_under_force = set()
+
+    if force:
+        _mark_uncalibrated(get_nodes())
 
     while True:
         node = None
         for candidate in get_nodes():
             candidate._pause_if_requested()
 
-            if force:
-                if id(candidate) not in fixed_under_force:
-                    node = candidate
-                    break
-                continue
+            if candidate._needs_reoptimise():
+                # UNCALIBRATED: select for a fix directly. Deliberately no
+                # re-check first — a passing check must not rescue this node
+                # (unlike BAD_EXPIRED below).
+                node = candidate
+                break
 
             state = candidate._guess_own_state()
             if state & CalibrationResult.BAD_EXPIRED:
@@ -251,11 +265,10 @@ def _drive_dag_to_ok(get_nodes, force=False) -> None:
         if node is None:
             return
 
-        if _attempt_one_fix(node, attempts, blamed, force) and force:
-            fixed_under_force.add(id(node))
+        _attempt_one_fix(node, attempts, blamed)
 
 
-def _attempt_one_fix(node, attempts, blamed, force) -> bool:
+def _attempt_one_fix(node, attempts, blamed) -> bool:
     """Fix one node once and re-check it. True if it came good.
 
     Deliberately makes a single attempt and returns: deciding what to do about
@@ -289,6 +302,7 @@ def _attempt_one_fix(node, attempts, blamed, force) -> bool:
     else:
         logger.debug("Result of fix of %s = %s", name, result)
         if result == CalibrationResult.OK:
+            node._record_own_fix()
             return True
         reason = f"check returned {result!s}"
 
@@ -296,7 +310,7 @@ def _attempt_one_fix(node, attempts, blamed, force) -> bool:
     # looks good: one of them may be the real problem.
     newly_suspect = _suspect_dependencies_of(node)
 
-    if newly_suspect and not force and id(node) not in blamed:
+    if newly_suspect and id(node) not in blamed:
         blamed.add(id(node))
         logger.warning(
             "Calibration of %s did not succeed (%s); its dependencies are now "
@@ -343,7 +357,9 @@ def fix_targets(targets, force=False) -> None:
     Args:
         targets: the leaf calibrations to maintain (a client's
             ``calibration_targets``). Empty is a no-op.
-        force: re-check and re-fix every node even if it looks fine.
+        force: persistently mark every fixable node UNCALIBRATED first, so
+            the walk re-fixes each one even if it looks fine (see
+            :func:`_drive_dag_to_ok`).
 
     Raises:
         CalibrationError: if a node will not come good within its attempt
@@ -396,6 +412,29 @@ def check_targets(
         return r, data
     finally:
         deactivate_active_calibration()
+
+
+def _mark_uncalibrated(nodes) -> None:
+    """Persistently mark every fixable node UNCALIBRATED.
+
+    The mark machinery of a forced walk: each marked node will be re-fixed by
+    the next (ordinary) walk pass, and the marks live in the status dataset
+    until each node's fix succeeds — so an interrupted forced walk resumes its
+    intent on the next walk, even in a new worker process. Unfixable nodes
+    (no optimizable params, no fix_own_state override) are skipped: they can
+    never be re-optimised, so marking them would wedge the walk.
+
+    Publishes ONE batched status-table write rather than one per node: the
+    table write is an unlocked whole-table read-modify-write racing monitor
+    threads, so N writes would multiply the race window. The in-memory marks
+    are what the walk itself consumes; any lost dataset update self-heals on
+    the next per-node publish.
+    """
+    nodes = [n for n in nodes if n.is_fixable()]
+    for node in nodes:
+        node._set_uncalibrated_mark()
+    if nodes:
+        nodes[0]._publish_uncalibrated_marks([type(n).__name__ for n in nodes])
 
 
 def _suspect_dependencies_of(failed: "Calibration") -> bool:
@@ -548,6 +587,14 @@ class Calibration(ExpFragment):
         machinery.
         """
         self.__timeout = 0
+        # Opt-in re-optimise timeout (None = feature off for this node), the
+        # wall-clock stamp of the last successful fix, and the explicit
+        # UNCALIBRATED mark set by a forced walk. Together these decide
+        # _needs_reoptimise(); they are persisted in the status dataset and,
+        # unlike check results, are only ever cleared by a successful fix.
+        self.__reoptimise_timeout = None
+        self.__last_optimised = None
+        self.__uncalibrated_mark = False
         self.__max_fix_attempts = _MAX_FIX_ATTEMPTS_UNSET
         self.__optimizable_params = []
         self.__optimizer_func = grid_search_optimizer  # Default optimizer, can be overridden by set_optimizer()
@@ -598,6 +645,15 @@ class Calibration(ExpFragment):
         self.__in_build_calibration = True
         self.build_calibration(*args, **kwargs)
         self.__in_build_calibration = False
+
+        # Validated at end of build rather than in set_reoptimise_timeout so
+        # that setattr_param_optimizable may legally be declared after it.
+        if self.__reoptimise_timeout is not None and not self.is_fixable():
+            raise TypeError(
+                f"{self.__class__.__name__} sets a re-optimise timeout but is "
+                "not fixable: it has no optimizable params and does not "
+                "override fix_own_state, so it can never be re-optimised"
+            )
 
         # Add a parameter controlling whether this calibration's data is
         # maximized, minimized or set to zero. This is a parameter rather than
@@ -792,10 +848,10 @@ class Calibration(ExpFragment):
     def _get_dependencies(self):
         return dag.get_dependencies(self)
 
-    def set_timeout(self, timeout: float):
+    def set_check_timeout(self, timeout: float):
         """
-        Set the timeout after which previously performed calibration checks
-        become invalid.
+        Set the check timeout, after which previously performed calibration
+        checks become invalid.
 
         This method can only be called during the build() phase.
 
@@ -803,26 +859,108 @@ class Calibration(ExpFragment):
         :meth:`Calibration.guess_state` will return a :class:`CalibrationResult`
         of type :any:`CalibrationResult.BAD_EXPIRED`. This will trigger a check
         of the process via a call to :meth:`Calibration.check_state` on the next
-        request.
+        request. A check that then passes makes the node good again — expiry of
+        the *check* timeout never forces a re-optimisation (that is what
+        :meth:`set_reoptimise_timeout` is for).
 
-        If this method is not called, timeout defaults to 0 seconds.
+        If this method is not called, the check timeout defaults to 0 seconds
+        (checks are never trusted and the node is re-measured every time).
 
         Args:
-            timeout (float): _description_
+            timeout (float): the check validity window, in seconds
         """
         if not self.__in_build_calibration:
             raise TypeError("This method must only be called in build_calibration()")
 
         self.__timeout = timeout
 
+    def set_timeout(self, timeout: float):
+        """
+        Deprecated alias of :meth:`set_check_timeout` (the check timeout).
+
+        See :meth:`set_reoptimise_timeout` for the separate, opt-in timeout
+        that forces a periodic re-optimisation.
+        """
+        warnings.warn(
+            "set_timeout is deprecated; use set_check_timeout (and see "
+            "set_reoptimise_timeout for the opt-in re-optimise timeout)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.set_check_timeout(timeout)
+
     def get_timeout(self) -> float:
         """
-        Gets the timeout set by :meth:`set_timeout`
+        Gets the check timeout set by :meth:`set_check_timeout`
 
         Returns:
             float: The timeout in seconds
         """
         return self.__timeout
+
+    def get_check_timeout(self) -> float:
+        """Alias of :meth:`get_timeout`, matching :meth:`set_check_timeout`."""
+        return self.__timeout
+
+    def set_reoptimise_timeout(self, timeout: float):
+        """
+        Opt in to periodic re-optimisation: after ``timeout`` seconds since the
+        last *successful fix*, this node becomes UNCALIBRATED — the next fix
+        walk re-fixes (re-optimises) it even if its checks keep passing.
+
+        This is deliberately distinct from the check timeout
+        (:meth:`set_check_timeout`): a passing check says the system is good
+        *enough*, not that its parameters are still optimal. UNCALIBRATED can
+        only be cleared by a successful fix, never by a passing check; check
+        walks (:meth:`check_state`, monitors) ignore it entirely.
+
+        A node that has opted in but has no recorded successful fix at all is
+        UNCALIBRATED immediately — it has never provably been optimised.
+
+        This method can only be called during the build() phase, and only on a
+        fixable node (see :meth:`is_fixable`; enforced at the end of build).
+
+        Args:
+            timeout (float): seconds after the last successful fix at which the
+                node must be re-optimised. Must be > 0: a value of 0 would
+                demand a re-fix on every walk pass, so the walk could never
+                finish (unlike ``set_check_timeout(0)``, where a passing
+                re-check ends the matter).
+        """
+        if not self.__in_build_calibration:
+            raise TypeError("This method must only be called in build_calibration()")
+        if timeout <= 0:
+            raise ValueError(
+                "The re-optimise timeout must be > 0: a node is only ever "
+                "cleared by a successful fix, so a timeout of 0 would demand "
+                "a re-fix on every single walk pass and the walk would never "
+                "terminate"
+            )
+
+        self.__reoptimise_timeout = timeout
+
+    def get_reoptimise_timeout(self) -> Optional[float]:
+        """The re-optimise timeout, or None if this node has not opted in
+        (see :meth:`set_reoptimise_timeout`)."""
+        return self.__reoptimise_timeout
+
+    def get_last_optimised(self) -> Optional[float]:
+        """Wall-clock time of this node's last successful fix (fix + passing
+        re-check), or None if none has ever been recorded."""
+        return self.__last_optimised
+
+    def is_fixable(self) -> bool:
+        """Whether a fix walk can act on this node.
+
+        True iff it has optimizable params (the default optimizer can fix it)
+        or overrides :meth:`fix_own_state`. This is exactly the condition under
+        which :meth:`_do_fix_own_state` can do anything other than raise — a
+        check-only node (a monitor, or a "human must fix it" check) is not
+        fixable and can therefore never be UNCALIBRATED.
+        """
+        return bool(self.__optimizable_params) or (
+            type(self).fix_own_state is not Calibration.fix_own_state
+        )
 
     def set_max_fix_attempts(self, attempts: Optional[int]) -> None:
         """
@@ -911,7 +1049,11 @@ class Calibration(ExpFragment):
 
         This method will perform quick measurements where necessairy to update
         any expired / bad / invalid Calibrations. If a dependent Calibration is
-        still within its timeout, it won't be checked unless `force==True`.
+        still within its *check* timeout, it won't be checked unless
+        `force==True`. Check walks are deliberately blind to the re-optimise
+        timeout and the UNCALIBRATED state (see
+        :meth:`set_reoptimise_timeout`): "due a re-optimise" does not mean
+        "the apparatus is bad", and only a fix walk can act on it anyway.
 
         Note that this method will return as soon as a problem is found, so it
         is not guaranteed that all dependents were checked unless the result is
@@ -964,10 +1106,10 @@ class Calibration(ExpFragment):
         Fix the state of this Calibration and dependents
 
         This method will perform quick measurements where necessairy to update
-        any expired / bad / invalid Calibrations. If force==True, this step is
-        skipped.
+        any expired / bad / invalid Calibrations.
 
-        For any Calibrations that fail the check, or if force==True,
+        For any Calibration that fails the check — or is UNCALIBRATED (its
+        re-optimise timeout has lapsed, see :meth:`set_reoptimise_timeout`) —
         :meth:`fix_own_state` will be called on the most basic one, which is
         then re-checked. The walk then re-plans from scratch and again picks
         the most basic Calibration that is not OK, until nothing is left — so
@@ -982,8 +1124,9 @@ class Calibration(ExpFragment):
         if it really has drifted, before that node is tried again.
 
         Args:
-            force (bool, optional): Check all dependents, even if they should be
-                                    fine. Defaults to False.
+            force (bool, optional): Persistently mark every fixable node
+                UNCALIBRATED first, so the walk re-fixes each one even if it
+                looks fine. Defaults to False.
 
         Returns:
             CalibrationResult:
@@ -1286,12 +1429,52 @@ class Calibration(ExpFragment):
                 logger.debug("Could not close the core device", exc_info=True)
         self._scheduler.pause()
 
+    def _set_uncalibrated_mark(self) -> None:
+        """In-memory half of :func:`_mark_uncalibrated` (no publish)."""
+        self.__uncalibrated_mark = True
+
+    def _publish_uncalibrated_marks(self, names) -> None:
+        """One batched, best-effort status-table write setting
+        ``uncalibrated: True`` for every name in ``names``; creates a minimal
+        entry for any node that has never published. Never raises: dataset
+        plumbing must not be able to break a fix walk."""
+        try:
+            table = self.get_dataset(STATUS_DATASET, default={}, archive=False)
+            if not isinstance(table, dict):
+                table = {}
+            for name in names:
+                entry = table.get(name)
+                if not isinstance(entry, dict):
+                    entry = {"last_check": None}
+                entry["uncalibrated"] = True
+                table[name] = entry
+            self.set_dataset(
+                STATUS_DATASET, table, broadcast=True, persist=True, archive=False
+            )
+        except Exception:
+            logger.warning("Could not publish uncalibrated marks", exc_info=True)
+
+    def _record_own_fix(self) -> None:
+        """A fix succeeded (fix + passing re-check): stamp ``last_optimised``
+        and clear any UNCALIBRATED mark, then publish.
+
+        This is the ONLY way either is cleared — a passing plain check must
+        not do it (:meth:`_record_own_check` deliberately leaves them alone),
+        because a check passing says nothing about whether the parameters are
+        still optimal.
+        """
+        self.__last_optimised = time()
+        self.__uncalibrated_mark = False
+        self._publish_status()
+
     def _record_own_check(self, result: CalibrationResult, data) -> None:
         """Record + publish a check outcome, whether measured on the host or
         reported back from a kernel."""
         # A fresh measurement supersedes any suspicion cast on this node: if it
         # measured OK the doubt is answered, and if it measured bad the node is
         # genuinely broken and the ordinary fix path takes over.
+        # (The UNCALIBRATED mark and last_optimised stamp are deliberately NOT
+        # touched here: only a successful fix clears them — _record_own_fix.)
         self.__suspected_by.clear()
 
         self.__most_recent_check_result = result
@@ -1339,12 +1522,18 @@ class Calibration(ExpFragment):
                 table = {}
             data = self.__most_recent_check_data
             name = self.__class__.__name__
+            r = self.__most_recent_check_result
             table[name] = {
-                "status": int(self.__most_recent_check_result),
+                # status may be None for a node that has been force-marked
+                # UNCALIBRATED before any check ever ran
+                "status": int(r) if r is not None else None,
                 "last_check": self.__most_recent_check_timestamp,
                 "timeout": self.__timeout,
                 "data": float(data) if isinstance(data, (int, float)) else None,
                 "suspected_by": sorted(self.__suspected_by),
+                "last_optimised": self.__last_optimised,
+                "reoptimise_timeout": self.__reoptimise_timeout,
+                "uncalibrated": self.__uncalibrated_mark,
             }
             if self.__most_recent_check_result == CalibrationResult.OK:
                 # This node coming good retracts the suspicion it cast, even on
@@ -1546,7 +1735,19 @@ class Calibration(ExpFragment):
             entry = self.get_dataset(STATUS_DATASET, default={}, archive=False).get(
                 self.__class__.__name__
             )
-            if not entry or entry.get("last_check") is None:
+            if not entry:
+                return False
+            # The UNCALIBRATED mark and last_optimised stamp are meaningful
+            # even for a node that has never been checked (a forced walk's
+            # mark can precede any check), so hydrate them before the
+            # last_check gate below. Entries written before these keys
+            # existed simply have none: not marked, never stamped.
+            self.__uncalibrated_mark = bool(entry.get("uncalibrated", False))
+            last_optimised = entry.get("last_optimised")
+            self.__last_optimised = (
+                float(last_optimised) if last_optimised is not None else None
+            )
+            if entry.get("last_check") is None:
                 return False
             # pyon round-trips CalibrationResult as a string of its int value
             self.__most_recent_check_result = CalibrationResult(int(entry["status"]))
@@ -1596,6 +1797,38 @@ class Calibration(ExpFragment):
             return CalibrationResult.BAD_EXPIRED
 
         return self.__most_recent_check_result
+
+    def _needs_reoptimise(self) -> bool:
+        """UNCALIBRATED: this node must be re-fixed at the next fix walk, even
+        if its checks keep passing.
+
+        True iff the node is fixable AND (it carries an explicit mark from a
+        forced walk, OR it has opted in to a re-optimise timeout and its last
+        successful fix is missing or older than that timeout).
+
+        Consumed ONLY by fix walks (:func:`_drive_dag_to_ok`) and the client
+        escape check (:meth:`CalibratedExpFragment._needs_recalibration`) —
+        :meth:`check_state` / :func:`check_targets` / monitor polls never see
+        it, because "due a re-optimise" does not mean "the apparatus is bad".
+        Cleared only by a successful fix (:meth:`_record_own_fix`).
+        """
+        if not self.is_fixable():
+            return False
+        if (
+            self.__most_recent_check_result is None
+            or self.__most_recent_check_timestamp is None
+        ):
+            # A fresh worker: hydrate the mark and stamp (and check state)
+            # from the status dataset, as _guess_own_state does.
+            self._recall_status()
+        if self.__uncalibrated_mark:
+            return True
+        if self.__reoptimise_timeout is None:
+            return False
+        if self.__last_optimised is None:
+            # Opted in but never provably optimised
+            return True
+        return time() - self.__last_optimised > self.__reoptimise_timeout
 
     def fix_own_state(self) -> None:
         """
