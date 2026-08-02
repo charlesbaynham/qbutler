@@ -98,11 +98,11 @@ def complex_network(fragment_factory):
 
 
 def test_complex_network_build(complex_network: Calibration, plot_graph):
-    plot_graph("complex_network")
+    plot_graph(complex_network, "complex_network")
 
 
 def test_simple_network_build(simple_network: Calibration, plot_graph):
-    plot_graph("simple_network")
+    plot_graph(simple_network, "simple_network")
 
 
 def test_simple_network_size(simple_network: Calibration):

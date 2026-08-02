@@ -53,6 +53,7 @@ from artiq.master.scheduler import Scheduler
 from ndscan.experiment import ExpFragment
 from ndscan.experiment.entry_point import make_fragment_scan_exp
 
+from qbutler import dag
 from qbutler.calibration import Calibration
 from qbutler.calibration import CalibrationResult
 from qbutler.worker_ipc_lock import install_worker_ipc_lock
@@ -119,6 +120,15 @@ def make_monitor_controller(
     """
 
     class MonitorController(ExpFragment):
+        def build(self, *args, **kwargs):
+            # One controller = one calibration tree = one registry, exactly as
+            # for a CalibratedExpFragment experiment: monitors that declare a
+            # shared dependency must share one instance of it, and each
+            # monitor's publish_dag must publish the whole fleet's graph, not
+            # a private one-node tree (see dag.building).
+            with dag.building():
+                super().build(*args, **kwargs)
+
         def build_fragment(self):
             # Earliest worker entry point: the IPC transaction lock must
             # precede any thread this controller starts. run_monitor() drives

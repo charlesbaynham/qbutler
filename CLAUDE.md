@@ -64,7 +64,7 @@ The `context` label is set by `_checking_for()` around each call site; nested an
 
 ### DAG (dag.py)
 
-Uses NetworkX + weak references. Calibrations are deduplicated by default — calling `add_dependency(SomeClass)` from two different parents yields one shared instance. Pass `create_duplicates=True` to force separate instances. **Do not cache** the output of `get_graph()` or `get_dependencies()` — the graph is rebuilt from weak refs and stale references will include GC'd calibrations.
+One strongly-referenced `DagRegistry` **per calibration tree**, created by the outermost `dag.building()` scope (entered by `Calibration.build`, `CalibratedExpFragment.build`, and the client shim — one experiment builds one tree). Calibrations are deduplicated by default — calling `add_dependency(SomeClass)` from two different parents *in the same tree* yields one shared instance; an instance from any other build, dead or alive, is unreachable by construction, which is why no `gc.collect()` is needed anywhere (the old process-global weakref map needed a whole-heap collection per `add_dependency` to stop dead trees answering dedup, and that is what blew the ARTIQ master's 15 s build deadline). Pass `create_duplicates=True` to force separate instances. Walk-time queries (`get_dependencies`, `get_union_dependencies`, `get_graph`) are keyed by any object of the tree; `get_calibrations_of_type` only works inside a `building()` scope. The registry lives exactly as long as its tree and dies with it by ordinary garbage collection.
 
 ### Optimizers (optimizers.py)
 
@@ -101,7 +101,29 @@ A fix walk fixes a node and re-checks it; if the re-check is still not OK — or
 
 Only `CalibrationError` is retried — a `NotImplementedError`, `ValueError` etc. is a bug in the calibration and propagates immediately. The loop yields to the scheduler between attempts, so a run stuck on a hopeless calibration can still be terminated.
 
-### Timeout behaviour
+### Repeating a shot: transitory errors only
+
+Distinct from fix retries, which re-*fix* a node: a single measurement that raises an ndscan `TransitoryError` is simply taken again, up to `max_transitory_error_retries` (default 10). That covers both measurement sites — the resident kernel loop (`_measure_with_transitory_retries`, used for the sweep points and the final verification) and the host-side `_do_check_own_state`. A transitory error means the apparatus is fine and this particular shot needs taking again, so repeating it costs only time.
+
+**`RTIOUnderflow` is deliberately not repeated**, unlike in ndscan's scan runners, which repeat any underflow. An underflow is a real timing failure and must surface; only the fragment that raised it can judge it benign, and the way to say so is to convert it to a `TransitoryError` there. (`icl_experiments` does this for one specific case: an Andor readout that overruns the fixed inter-series timeline budget and underflows the background-image trigger.) `RestartKernelTransitoryError` is not repeated either — nothing inside a resident kernel loop can restart the kernel — so it propagates to the client.
+
+### SUSPECT: distrusting in-timeout OKs
+
+When a node's fix attempt fails, the real culprit is often a dependency that still *looks* good — checked recently, inside its timeout — but has silently drifted. Each such dependency is marked **suspect**: the dependent's class name is added to its `suspected_by` set (persisted in `calibrations.status`, restored by `_recall_status`). SUSPECT is deliberately **not** a `CalibrationResult` member — a check can't *measure* "suspect"; it is trust metadata, and `check_own_state` can never return it.
+
+A suspect node's `_guess_own_state()` returns `BAD_EXPIRED` (return-only — the cached OK is left intact), so every walk, monitor, and client escape check re-measures it with no special-casing. Suspicion clears when (a) the node is re-measured — any fresh result supersedes doubt — or (b) a suspector records an OK check, which retracts its name from live dependencies and prunes it from every `calibrations.status` entry (so it works cross-process).
+
+Suspicion needs no walk machinery of its own, because the fix walk holds no plan: see *The fix walk* below. A suspect dependency stops guessing OK, so it is simply the most basic not-OK node on the next pass and gets measured then. `force=True` walks still mark suspects (for monitors and later walks) but choose their next node by "not yet fixed this walk" instead. The DAG applet shows suspect nodes in purple with the suspector's name.
+
+### The fix walk
+
+`fix_state` / `fix_targets` delegate to `_drive_dag_to_ok`, which **re-plans from scratch after every attempt**. Each pass asks the DAG for its nodes (furthest-dependency-first) and acts on the first one that is not OK; one fix attempt is made; then the question is asked again. There is no precomputed node list, no backtracking, and no limit on how often the walk may change its mind — whichever node is the most basic problem *now* is the one that runs next.
+
+This is cheap because a node inside its timeout answers `_guess_own_state()` from its cached status: only stale, failed, or suspect nodes cost a measurement, and measuring one refreshes it for later passes.
+
+`_attempt_one_fix` therefore makes exactly **one** fix + re-check and returns; retrying is the walk's decision, not the node's. A node that has just cast fresh suspicion upstream is spared its budget check once, so even `max_fix_attempts=1` gets one chance to blame a dependency before giving up.
+
+An earlier design walked a precomputed list and backtracked via an internal `_SuspectDependencies` exception, **once per node per walk**; after that a node spun in a local retry loop, re-fixing itself forever while the dependencies it kept blaming were never re-measured. That is why the scheduling rule is now "recompute every time" rather than a special case for suspicion.
 
 `set_timeout(seconds)` sets how long a check result is valid. **`set_timeout(0)` means never expire** (re-checked every time), not "expire immediately". Monitors require timeout > 0.
 

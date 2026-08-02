@@ -121,24 +121,23 @@ def fragment_precompiler(fragment_factory):
 
 @fixture
 def plot_graph(tmp_path):
-    def func(name=None):
+    def func(member, name=None):
+        """Plot the dependency graph of the tree ``member`` belongs to."""
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import networkx as nx
 
-        from qbutler.dag import _get_graph
+        from qbutler.dag import get_graph
 
         if name is None:
             name = "graph"
 
-        G = _get_graph()
-
-        G_no_refs = nx.DiGraph([(a(), b()) for a, b in G.edges])
+        G = get_graph(member)
 
         plt.figure()
-        nx.draw_networkx(G_no_refs)
+        nx.draw_networkx(nx.relabel_nodes(G, repr))
         plt.savefig(tmp_path / (name + ".png"))
 
     return func

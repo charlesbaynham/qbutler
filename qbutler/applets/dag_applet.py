@@ -7,6 +7,9 @@ the per-calibration state in ``calibrations.status``:
 - green: last check OK and within its timeout
 - orange: expired (never checked, or past last_check + timeout)
 - red: last check returned a BAD flag
+- purple: SUSPECT — the last check was OK and within timeout, but a dependent
+  calibration failed to fix itself, so this node's OK is no longer trusted and
+  it will be re-measured; the label names the suspecting calibration(s)
 - grey: no status recorded
 
 Nodes are layered by dependency depth (dependents above their dependencies),
@@ -37,6 +40,7 @@ STATE_COLOURS = {
     "ok": (60, 180, 75),
     "bad": (220, 50, 47),
     "expired": (255, 160, 0),
+    "suspect": (155, 90, 200),
     "unknown": (130, 130, 130),
 }
 
@@ -209,6 +213,8 @@ def _node_state(entry, now):
         return "bad", age_text
     if age > float(entry.get("timeout", 0)):
         return "expired", age_text
+    if entry.get("suspected_by"):
+        return "suspect", age_text
     return "ok", age_text
 
 
@@ -216,6 +222,8 @@ def _node_label(name, entry, now):
     """The lines of text drawn under a node, and its state colour key."""
     state, age_text = _node_state(entry, now)
     lines = [name, state.upper()]
+    if state == "suspect":
+        lines[-1] += " (by {})".format(", ".join(entry.get("suspected_by", [])))
     data = entry.get("data") if entry else None
     if data is not None:
         try:
