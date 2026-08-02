@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "qbutler"
-version = "0.2"
+version = "0.3"
 description = "Manage a complex research experiment with lots of moving parts and drifting calibrations automatically and repeatably."
 authors = ["Charles Baynham <charles.baynham@gmail.com>"]
 readme = "README.rst"
