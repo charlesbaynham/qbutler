@@ -35,6 +35,9 @@ extensions = [
     "sphinx.ext.autosectionlabel",  # For automatically labelling sections, for internal references
 ]
 
+# The generated API pages repeat section titles ("Submodules", ...)
+autosectionlabel_prefix_document = True
+
 # If you'd like to be able to link to other project's code, put a link to their
 # sphinx-generated docs here
 intersphinx_mapping = {
@@ -224,3 +227,40 @@ texinfo_documents = [
         "Miscellaneous",
     ),
 ]
+
+
+# -- API docs ------------------------------------------------------------
+
+
+def run_apidoc(_):
+    """Generate the API reference (autogen/modules.rst) from the docstrings"""
+    from sphinx.ext import apidoc
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    apidoc.main(
+        [
+            "--force",
+            "--module-first",
+            "--doc-project",
+            "API reference",
+            "-o",
+            os.path.join(here, "autogen"),
+            os.path.join(here, "..", "qbutler"),
+        ]
+    )
+
+    # The package re-exports the public API from its submodules. Show it on the
+    # package page too, but don't index it there, so cross-references resolve
+    # uniquely to the submodule definitions.
+    package_rst = os.path.join(here, "autogen", "qbutler.rst")
+    with open(package_rst) as f:
+        text = f.read()
+    text = text.replace(
+        ".. automodule:: qbutler\n", ".. automodule:: qbutler\n   :noindex:\n", 1
+    )
+    with open(package_rst, "w") as f:
+        f.write(text)
+
+
+def setup(app):
+    app.connect("builder-inited", run_apidoc)
