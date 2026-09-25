@@ -70,7 +70,10 @@ GitHub Actions runs two workflows on every push and pull request:
 Documentation
 -------------
 
-Docs are built with `Sphinx <https://www.sphinx-doc.org>`_ and hosted on GitHub Pages.
+Docs are built with `Sphinx <https://www.sphinx-doc.org>`_ and hosted on
+`GitHub Pages <https://charlesbaynham.github.io/qbutler/>`_, including an
+`API reference <https://charlesbaynham.github.io/qbutler/autogen/modules.html>`_
+generated from the docstrings.
 
 Build locally:
 
