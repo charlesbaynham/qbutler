@@ -373,6 +373,38 @@ def test_needs_recalibration_force_marks_and_consumes(fragment_factory):
     assert frag._needs_recalibration(True) is False
 
 
+class ZeroTimeoutCal(HostCal):
+    def build_calibration(self):
+        super().build_calibration()
+        self.set_check_timeout(0.0)
+
+
+class ZeroTimeoutClient(CalibratedExpFragment):
+    def build_fragment(self):
+        self.setattr_calibration(ZeroTimeoutCal)
+
+
+def test_nodes_checked_in_walk_trusted_until_top_level_runs(fragment_factory):
+    """With a 0 s check timeout every node is stale the instant it passes. The
+    escape check on re-entry must still trust a node the just-finished walk
+    checked, once; thereafter the timeout applies again."""
+    frag = fragment_factory(ZeroTimeoutClient)
+
+    assert frag._needs_recalibration(False) is True  # never checked
+    frag._recalibrate()
+    assert frag._needs_recalibration(False) is False  # trusted: checked in walk
+    assert frag._needs_recalibration(False) is True  # top level has run: stale
+
+
+def test_trust_in_walk_checks_overridden_by_suspicion(fragment_factory):
+    frag = fragment_factory(ZeroTimeoutClient)
+    cal = frag.ZeroTimeoutCal
+
+    frag._recalibrate()
+    cal._add_suspicion("Dependent")
+    assert frag._needs_recalibration(False) is True
+
+
 def test_needs_recalibration_true_when_reoptimise_due(fragment_factory, monkeypatch):
     """No force involved: an opted-in node whose re-optimise window lapses
     must trigger the escape check, so the re-fix happens at the next
