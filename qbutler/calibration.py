@@ -1787,7 +1787,15 @@ class Calibration(ExpFragment):
             logger.debug("Could not recall calibration status", exc_info=True)
             return False
 
-    def _guess_own_state(self) -> CalibrationResult:
+    def _guess_own_state(self, trusted_since=None) -> CalibrationResult:
+        """The cached state of this node, without measuring.
+
+        Args:
+            trusted_since: if given, a check recorded at or after this time is
+                not expired by its timeout: it was taken during the current
+                pass of the DAG, so it is trusted until the top level has run.
+                Suspicion still overrides this.
+        """
         if (
             self.__most_recent_check_result is None
             or self.__most_recent_check_timestamp is None
@@ -1799,7 +1807,11 @@ class Calibration(ExpFragment):
 
         time_now = time()
         expires_at = self.__most_recent_check_timestamp + self.__timeout
-        if time_now > expires_at:
+        checked_this_pass = (
+            trusted_since is not None
+            and self.__most_recent_check_timestamp >= trusted_since
+        )
+        if time_now > expires_at and not checked_this_pass:
             logger.debug(
                 "Guess own state of %s failed: data is stale (time = %s, expired at %s, timeout = %s)",
                 self.__class__,

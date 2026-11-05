@@ -36,6 +36,7 @@ one in ``build_fragment``.
 
 import logging
 from contextlib import suppress
+from time import time
 
 from artiq.experiment import TBool
 from artiq.experiment import TFloat
@@ -166,6 +167,13 @@ class CalibratedExpFragment(ExpFragment):
     # re-entry).
     _force_consumed: bool = False
 
+    # Start time of the most recent fix walk, or None once the main kernel has
+    # passed a clean recalibrate_if_needed() since. While set, nodes checked at
+    # or after it are trusted despite their check timeout (see
+    # _needs_recalibration): otherwise a short or zero timeout makes every node
+    # stale again the instant the walk that just checked it finishes.
+    _trusted_since: float = None
+
     def build(self, *args, **kwargs):
         # One experiment = one calibration tree = one registry: scoping the
         # whole build means every setattr_calibration target this client
@@ -250,13 +258,20 @@ class CalibratedExpFragment(ExpFragment):
         marked every fixable node UNCALIBRATED, and the ordinary walk re-fixes
         marked nodes.
 
+        Nodes checked during the walk are trusted, whatever their check timeout,
+        until the main kernel next finds the DAG healthy (see
+        :meth:`_needs_recalibration`), unless something has since cast suspicion
+        on them.
+
         The walk yields to the scheduler between the shots of a fix (see
         :meth:`~qbutler.calibration.Calibration._pause_if_requested`), so a
         recalibration can be preempted or terminated rather than having to run
         to completion; a termination raises ``TerminationRequested`` through
         here, which the wrapper suppresses to end the experiment cleanly.
         """
+        walk_started = time()
         fix_targets(self._resolve_targets())
+        self._trusted_since = walk_started
 
     def _resolve_targets(self) -> list:
         if self.calibration_targets is not None:
@@ -303,10 +318,12 @@ class CalibratedExpFragment(ExpFragment):
             return True
         for node in nodes:
             if (
-                node._guess_own_state() != CalibrationResult.OK
+                node._guess_own_state(trusted_since=self._trusted_since)
+                != CalibrationResult.OK
                 or node._needs_reoptimise()
             ):
                 return True
+        self._trusted_since = None
         return False
 
 
